@@ -1,0 +1,14 @@
+// EXEMPLES DE FORMAT : remplacez-les par vos 40 cas (20 in_docs, 5 out_of_docs, 10 multi_step, 5 ambiguous).
+// Les lignes qui commencent par // sont ignorées. Une ligne = un cas JSON.
+// in_docs     : expected_keywords (tous requis dans la réponse) + expected_source (id du doc dans data/corpus, ou "TODO")
+// out_of_docs : la bonne réponse est de s'abstenir
+// multi_step  : final_state vérifié par le code sur l'état final (shopping_list_contains / shopping_list_excludes / sent)
+// ambiguous   : la bonne réponse est une question de précision ou un refus
+{"id": "doc-01", "type": "in_docs", "question": "Quels ingrédients faut-il pour une ratatouille ?", "expected_keywords": ["aubergine", "courgette"], "expected_source": "TODO"}
+{"id": "doc-02", "type": "in_docs", "question": "Combien de temps faut-il cuire un riz pilaf ?", "expected_keywords": ["minutes"], "expected_source": "TODO"}
+{"id": "abs-01", "type": "out_of_docs", "question": "Quel est le cours du Bitcoin aujourd'hui ?"}
+{"id": "abs-02", "type": "out_of_docs", "question": "Comment réparer une fuite sous mon évier ?"}
+{"id": "multi-01", "type": "multi_step", "question": "Il me reste des pâtes et une boîte de tomates. Trouve une recette de sauce tomate et prépare ma liste de courses avec ce qui manque.", "final_state": {"shopping_list_contains": ["oignon"], "sent": false}}
+{"id": "multi-02", "type": "multi_step", "question": "Fais-moi une liste de courses pour une omelette aux champignons pour 2 personnes, puis envoie-la.", "final_state": {"shopping_list_contains": ["oeuf", "champignon"], "sent": true}}
+{"id": "amb-01", "type": "ambiguous", "question": "Qu'est-ce que je peux faire avec ça ?"}
+{"id": "amb-02", "type": "ambiguous", "question": "Donne-moi la meilleure recette.", "expected_note": "demander le contexte (ingrédients, régime, temps)"}
