@@ -15,6 +15,7 @@ calibré sur ~20 réponses annotées à la main (voir le sujet, section 2.3).
 import argparse
 import importlib
 import json
+import os
 import statistics
 import sys
 import unicodedata
@@ -23,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))  # permet « import src.levelN » quel que soit le dossier de lancement
-TESTS = ROOT / "tests.jsonl"
+TESTS = Path(os.getenv("TESTS_FILE", ROOT / "tests.jsonl"))
 RUNS = ROOT / "runs"
 
 ABSTAIN_MARKERS = [
@@ -86,6 +87,7 @@ def score(case: dict, out: dict) -> dict:
             if retrieved is not None:
                 s["recall5"] = 1.0 if src in retrieved[:5] else 0.0
                 s["rr"] = 1.0 / (retrieved.index(src) + 1) if src in retrieved else 0.0
+                s["cited"] = 1.0 if src in out.get("sources", []) else 0.0
     elif t == "out_of_docs":
         s["abstained"] = has_marker(ans, ABSTAIN_MARKERS)
     elif t == "multi_step":
@@ -146,6 +148,7 @@ def aggregate(rows, trials):
         "recall5": mean(col("in_docs", "recall5")),
         "mrr": mean(col("in_docs", "rr")),
         "exactitude": mean(col("in_docs", "correct")),
+        "cite": mean(col("in_docs", "cited")),
         "abstention": mean(col("out_of_docs", "abstained")),
         "clarif": mean(col("ambiguous", "clarified")),
         "succes": mean(first_try) if first_try else None,
@@ -177,12 +180,12 @@ def main():
 
     k = f"pass^{args.trials}" if args.trials > 1 else "pass^k"
     lines = [
-        f"| Niveau | Recall@5 | MRR | Exactitude | Abstention | Clarif. | Succès tâches | {k} | Tokens/requête | Latence (s) | Erreurs |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        f"| Niveau | Recall@5 | MRR | Exactitude | Source citée | Abstention | Clarif. | Succès tâches | {k} | Tokens/requête | Latence (s) | Erreurs |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for lv, a in results.items():
         lines.append(
-            f"| {lv} | {fmt(a['recall5'])} | {fmt(a['mrr'])} | {fmt(a['exactitude'])} | {fmt(a['abstention'])} "
+            f"| {lv} | {fmt(a['recall5'])} | {fmt(a['mrr'])} | {fmt(a['exactitude'])} | {fmt(a['cite'])} | {fmt(a['abstention'])} "
             f"| {fmt(a['clarif'])} | {fmt(a['succes'])} | {fmt(a['pass_k'])} | {fmt(a['tokens'], 0)} "
             f"| {fmt(a['latence'], 1)} | {a['erreurs']} |"
         )

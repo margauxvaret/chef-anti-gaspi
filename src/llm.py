@@ -6,7 +6,9 @@ local sur http://localhost:11434/v1, donc passer du modèle local à l'API du pr
 
 Mettre LLM_MODEL=mock pour tester la chaîne d'évaluation sans aucun modèle.
 """
+import hashlib
 import os
+import re
 import time
 
 import requests
@@ -17,6 +19,11 @@ load_dotenv()
 BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 API_KEY = os.getenv("LLM_API_KEY", "ollama")
 MODEL = os.getenv("LLM_MODEL", "qwen2.5:3b")
+
+# Embeddings (niveau 1). Par défaut : même serveur que le LLM, modèle multilingue léger d'Ollama.
+EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", BASE_URL)
+EMBED_API_KEY = os.getenv("EMBED_API_KEY", API_KEY)
 
 
 def chat(messages, tools=None, temperature=0.0, max_tokens=512, model=None, seed=0):
@@ -55,6 +62,38 @@ def chat(messages, tools=None, temperature=0.0, max_tokens=512, model=None, seed
         "tokens_out": usage.get("completion_tokens", 0),
         "latency": time.time() - t0,
     }
+
+
+def embed(texts, model=None, batch=16):
+    """Vecteurs d'embedding (liste de listes de floats), dans l'ordre des textes."""
+    model = model or EMBED_MODEL
+    if model == "mock":
+        return [_mock_vec(t) for t in texts]
+    out = []
+    for i in range(0, len(texts), batch):
+        try:
+            r = requests.post(
+                f"{EMBED_BASE_URL}/embeddings",
+                headers={"Authorization": f"Bearer {EMBED_API_KEY}"},
+                json={"model": model, "input": texts[i:i + batch]},
+                timeout=300,
+            )
+            r.raise_for_status()
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"Embeddings indisponibles ({e}). Avec Ollama : `ollama pull {model}` puis relancer."
+            ) from e
+        data = sorted(r.json()["data"], key=lambda d: d["index"])
+        out += [d["embedding"] for d in data]
+    return out
+
+
+def _mock_vec(text, dim=64):
+    """Faux embedding (sac de mots haché), déterministe, pour tester hors ligne."""
+    v = [0.0] * dim
+    for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        v[int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim] += 1.0
+    return v
 
 
 def _mock(messages):

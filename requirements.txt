@@ -1,7 +1,6 @@
 requests
 python-dotenv
+numpy
+rank-bm25
 # À ajouter au fur et à mesure (et à figer ici pour la reproductibilité) :
 # streamlit            # interface
-# rank-bm25            # niveau 1 : recherche lexicale
-# sentence-transformers # niveau 1 : embeddings (CPU possible, modèle multilingue léger)
-# numpy

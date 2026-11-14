@@ -5,7 +5,7 @@ Assistant de cuisine anti-gaspi (parcours Texte). Quatre niveaux comparés sur l
 | Niveau | Description | Fichier |
 |---|---|---|
 | 0 | LLM seul (référence) | `src/level0.py` |
-| 1 | RAG sur des recettes Wikilivres | `src/level1.py` (à faire) |
+| 1 | RAG sur des recettes Wikilivres (BM25 + embeddings, citations, abstention) | `src/level1.py` |
 | 2 | Agent outillé (Open Food Facts, conversion d'unités, liste de courses) | `src/level2.py` (à faire) |
 | 3 | Extension mesurée contre le niveau 2 | `src/level3.py` (à faire) |
 
@@ -24,8 +24,13 @@ cp .env.example .env          # puis adapter
 ```bash
 ollama pull qwen2.5:3b        # ou un autre petit modèle ; pour le niveau 2, choisir un modèle
                               # qui gère les appels d'outils (filtre « tools » sur ollama.com/search)
+ollama pull bge-m3            # modèle d'embeddings multilingue (niveau 1)
 ollama serve                  # si pas déjà lancé
 ```
+
+Niveau 1 : `python eval.py --levels 1`. Variantes pour le rapport : `RAG_MODE=bm25`, `RAG_MODE=dense`
+ou `RAG_MODE=hybrid` (voir l'en-tête de `src/level1.py` pour tous les réglages). Le premier lancement
+calcule les embeddings (cache dans `data/index/`).
 
 Le code parle le protocole OpenAI-compatible (`src/llm.py`). Pour utiliser l'API partagée du prof, changer
 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` dans `.env`, rien d'autre.
