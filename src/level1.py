@@ -54,7 +54,7 @@ STOPWORDS = set(
 
 
 def norm(s):
-    s = unicodedata.normalize("NFD", s.lower().replace("’", "'"))
+    s = unicodedata.normalize("NFD", s.lower().replace("’", "'").replace("œ", "oe").replace("æ", "ae"))
     return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
 
@@ -120,6 +120,11 @@ def get_index():
     if _INDEX is None:
         _INDEX = Index()
     return _INDEX
+
+
+def warmup():
+    """Construit l'index avant la première question, pour que la latence mesurée ne l'inclue pas."""
+    get_index()
 
 
 def retrieve(query, n=N_CANDIDATES):

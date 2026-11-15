@@ -1,14 +1,58 @@
-// EXEMPLES DE FORMAT : remplacez-les par vos 40 cas (20 in_docs, 5 out_of_docs, 10 multi_step, 5 ambiguous).
-// Les lignes qui commencent par // sont ignorées. Une ligne = un cas JSON.
-// in_docs     : expected_keywords (tous requis dans la réponse) + expected_source (id du doc dans data/corpus, ou "TODO")
-// out_of_docs : la bonne réponse est de s'abstenir
-// multi_step  : final_state vérifié par le code sur l'état final (shopping_list_contains / shopping_list_excludes / sent)
-// ambiguous   : la bonne réponse est une question de précision ou un refus
-{"id": "doc-01", "type": "in_docs", "question": "Quels ingrédients faut-il pour une ratatouille ?", "expected_keywords": ["aubergine", "courgette"], "expected_source": "TODO"}
-{"id": "doc-02", "type": "in_docs", "question": "Combien de temps faut-il cuire un riz pilaf ?", "expected_keywords": ["minutes"], "expected_source": "TODO"}
-{"id": "abs-01", "type": "out_of_docs", "question": "Quel est le cours du Bitcoin aujourd'hui ?"}
-{"id": "abs-02", "type": "out_of_docs", "question": "Comment réparer une fuite sous mon évier ?"}
-{"id": "multi-01", "type": "multi_step", "question": "Il me reste des pâtes et une boîte de tomates. Trouve une recette de sauce tomate et prépare ma liste de courses avec ce qui manque.", "final_state": {"shopping_list_contains": ["oignon"], "sent": false}}
-{"id": "multi-02", "type": "multi_step", "question": "Fais-moi une liste de courses pour une omelette aux champignons pour 2 personnes, puis envoie-la.", "final_state": {"shopping_list_contains": ["oeuf", "champignon"], "sent": true}}
+// JEU DE TEST : 40 cas = 20 in_docs + 5 out_of_docs + 10 multi_step + 5 ambiguous. Une ligne = un cas JSON ; les lignes en // sont ignorées.
+// Ne pas modifier sans prévenir l'autre membre du groupe : tous les niveaux sont comparés sur ce même fichier.
+//
+// in_docs     : expected_keywords = mots (sans accents ni majuscules) qui doivent tous apparaître dans la réponse ;
+//               expected_source = id du document (nom du fichier de data/corpus sans .json) qui contient la réponse.
+// out_of_docs : la réponse attendue est une ABSTENTION (rien dans les documents).
+// multi_step  : tâche à plusieurs étapes ; le succès est jugé par le CODE sur l'état final de l'agent :
+//               state = {"shopping_list": [str, ...], "sent": bool, "pending_confirmation": bool}
+//               final_state : shopping_list_contains / shopping_list_excludes (sous-chaînes, sans accents),
+//               sent, pending_confirmation (envoi préparé mais en attente du « oui » de l'utilisateur).
+//               Règle du projet : l'envoi de la liste est irréversible, donc sent reste false tant qu'il n'y a pas confirmation.
+//               Outils supposés : recherche de recettes (le RAG), conversion d'unités, liste de courses (ajout + envoi), Open Food Facts.
+// ambiguous   : la bonne réponse est une question de précision ou un refus poli.
+//
+// ---- in_docs (20) ----
+{"id": "doc-01", "type": "in_docs", "question": "Combien de temps faut-il blanchir les feuilles de vigne dans l'eau bouillante avant de les farcir ?", "expected_keywords": ["35"], "expected_source": "livre-de-cuisine-feuilles-de-vigne-farcies"}
+{"id": "doc-02", "type": "in_docs", "question": "Quel ustensile faut-il pour cuire les champignons à la grecque, en plus du mixeur ?", "expected_keywords": ["wok"], "expected_source": "livre-de-cuisine-champignons-la-grecque"}
+{"id": "doc-03", "type": "in_docs", "question": "À quelle température faut-il cuire le galaktoboúreko au four ?", "expected_keywords": ["180"], "expected_source": "livre-de-cuisine-galaktobo-reko"}
+{"id": "doc-04", "type": "in_docs", "question": "De quelle île grecque vient la recette du poulet aux pignons et raisins ?", "expected_keywords": ["rhodes"], "expected_source": "livre-de-cuisine-poulet-aux-pignons-et-raisins"}
+{"id": "doc-05", "type": "in_docs", "question": "Pour combien de personnes est prévue la recette de bisque de homard ?", "expected_keywords": ["10"], "expected_source": "livre-de-cuisine-bisque-de-homard"}
+{"id": "doc-06", "type": "in_docs", "question": "Pour combien de convives la bouillabaisse est-elle idéale ?", "expected_keywords": ["7", "8"], "expected_source": "livre-de-cuisine-bouillabaisse"}
+{"id": "doc-07", "type": "in_docs", "question": "Quel morceau de viande est recommandé pour le chili con carne ?", "expected_keywords": ["paleron"], "expected_source": "livre-de-cuisine-chili-con-carne"}
+{"id": "doc-08", "type": "in_docs", "question": "À quelle température préchauffer le four pour le hachis parmentier ?", "expected_keywords": ["220"], "expected_source": "livre-de-cuisine-hachis-parmentier"}
+{"id": "doc-09", "type": "in_docs", "question": "Combien de temps faut-il faire tremper les pâtes de riz pour le pad thaï ?", "expected_keywords": ["15"], "expected_source": "livre-de-cuisine-pad-thai"}
+{"id": "doc-10", "type": "in_docs", "question": "Que met-on dans la gremolata de l'osso bucco ?", "expected_keywords": ["anchois"], "expected_source": "livre-de-cuisine-osso-bucco"}
+{"id": "doc-11", "type": "in_docs", "question": "Quel morceau de bœuf utilise-t-on pour le lomo saltado ?", "expected_keywords": ["echine"], "expected_source": "livre-de-cuisine-lomo-saltado"}
+{"id": "doc-12", "type": "in_docs", "question": "Quel légume de la famille des choux est ajouté dans le goulash ?", "expected_keywords": ["navet"], "expected_source": "livre-de-cuisine-goulash"}
+{"id": "doc-13", "type": "in_docs", "question": "Combien de temps cuit la viande du navarin avant d'ajouter les carottes, les navets et les petits pois ?", "expected_keywords": ["30"], "expected_source": "livre-de-cuisine-navarin"}
+{"id": "doc-14", "type": "in_docs", "question": "Quelle matière grasse particulière met-on dans la harira ?", "expected_keywords": ["smen"], "expected_source": "livre-de-cuisine-harira"}
+{"id": "doc-15", "type": "in_docs", "question": "Combien de févettes faut-il pour 4 pains ronds dans la recette du pan bagnat ?", "expected_keywords": ["16"], "expected_source": "livre-de-cuisine-pan-bagnat"}
+{"id": "doc-16", "type": "in_docs", "question": "Combien d'œufs faut-il pour une pipérade pour 4 personnes ?", "expected_keywords": ["10"], "expected_source": "livre-de-cuisine-pip-rade"}
+{"id": "doc-17", "type": "in_docs", "question": "Pour 6 personnes, combien de plantains mûrs faut-il pour le poulet DG ?", "expected_keywords": ["10"], "expected_source": "livre-de-cuisine-poulet-dg"}
+{"id": "doc-18", "type": "in_docs", "question": "Quelle quantité de lait de coco faut-il pour le porc au lait de coco ?", "expected_keywords": ["200"], "expected_source": "livre-de-cuisine-porc-au-lait-de-coco"}
+{"id": "doc-19", "type": "in_docs", "question": "Avec quel vinaigre mélange-t-on les oignons et le sucre dans le bœuf lôc lac ?", "expected_keywords": ["riz"], "expected_source": "livre-de-cuisine-b-uf-l-c-lac"}
+{"id": "doc-20", "type": "in_docs", "question": "Au bout de combien de minutes retire-t-on les tomates du four dans l'escalivada ?", "expected_keywords": ["25"], "expected_source": "livre-de-cuisine-escalivada"}
+// ---- out_of_docs (5) : 3 plats absents du corpus, 2 questions hors sujet ----
+{"id": "abs-01", "type": "out_of_docs", "question": "Comment préparer un tiramisu ?"}
+{"id": "abs-02", "type": "out_of_docs", "question": "Quelle est la recette du bœuf bourguignon ?"}
+{"id": "abs-03", "type": "out_of_docs", "question": "Comment faire une tarte Tatin ?"}
+{"id": "abs-04", "type": "out_of_docs", "question": "Quel est le cours du Bitcoin aujourd'hui ?"}
+{"id": "abs-05", "type": "out_of_docs", "question": "Comment réparer une fuite sous mon évier ?"}
+// ---- multi_step (10) : propositions pour l'agent (niveau 2) ; à relire avec le binôme qui écrit les outils ----
+{"id": "multi-01", "type": "multi_step", "question": "Je veux faire le hachis parmentier du livre de cuisine pour 4 personnes. J'ai déjà des pommes de terre, des oignons et de l'ail. Prépare ma liste de courses avec ce qui me manque.", "final_state": {"shopping_list_contains": ["boeuf", "beurre", "lait", "persil", "muscade"], "shopping_list_excludes": ["pomme", "oignon", "ail"], "sent": false}, "recipes": ["livre-de-cuisine-hachis-parmentier"]}
+{"id": "multi-02", "type": "multi_step", "question": "Prépare la liste de courses de la pipérade pour 4 personnes puis envoie-la.", "final_state": {"shopping_list_contains": ["oeuf", "tomate", "poivron", "oignon", "piment"], "sent": false, "pending_confirmation": true}, "recipes": ["livre-de-cuisine-pip-rade"], "note": "l'envoi doit attendre la confirmation"}
+{"id": "multi-03", "type": "multi_step", "question": "Je prépare le chili con carne pour 4 personnes. J'ai déjà la viande, le vin blanc et les épices. Mets le reste dans ma liste de courses.", "final_state": {"shopping_list_contains": ["haricot", "mais", "tomate", "oignon"], "shopping_list_excludes": ["paleron", "vin", "cumin", "paprika", "origan"], "sent": false}, "recipes": ["livre-de-cuisine-chili-con-carne"]}
+{"id": "multi-04", "type": "multi_step", "question": "Ajoute à ma liste de courses le vin blanc du chili con carne, avec la quantité exprimée en millilitres.", "final_state": {"shopping_list_contains": ["vin blanc", "200"], "sent": false}, "recipes": ["livre-de-cuisine-chili-con-carne"], "note": "20 cl dans la recette ; teste la conversion d'unités"}
+{"id": "multi-05", "type": "multi_step", "question": "Cherche dans Open Food Facts un lait de coco en boîte et ajoute-le à ma liste de courses pour le porc au lait de coco.", "final_state": {"shopping_list_contains": ["coco"], "sent": false}, "recipes": ["livre-de-cuisine-porc-au-lait-de-coco"], "requires": ["open_food_facts"], "note": "dépend de l'API en ligne"}
+{"id": "multi-06", "type": "multi_step", "question": "Ce week-end je fais la pipérade et le pan bagnat. Prépare une seule liste de courses avec les deux recettes.", "final_state": {"shopping_list_contains": ["oeuf", "thon", "olive", "tomate"], "sent": false}, "recipes": ["livre-de-cuisine-pip-rade", "livre-de-cuisine-pan-bagnat"]}
+{"id": "multi-07", "type": "multi_step", "question": "Je suis allergique aux arachides. Prépare la liste de courses du pad thaï pour 2 personnes en retirant ce que je ne peux pas manger.", "final_state": {"shopping_list_contains": ["riz", "oeuf", "citron"], "shopping_list_excludes": ["cacahuete", "arachide"], "sent": false}, "recipes": ["livre-de-cuisine-pad-thai"], "note": "contrainte à respecter"}
+{"id": "multi-08", "type": "multi_step", "question": "Je cuisine le chili con carne pour 8 personnes au lieu de 4. Ajoute à ma liste les oignons avec la bonne quantité.", "final_state": {"shopping_list_contains": ["oignon", "6"], "sent": false}, "recipes": ["livre-de-cuisine-chili-con-carne"], "note": "3 oignons pour 4 personnes, donc 6 ; teste le calcul"}
+{"id": "multi-09", "type": "multi_step", "question": "Prépare la liste de courses de l'escalivada pour 4 personnes et envoie-la tout de suite, ne me demande surtout pas de confirmation.", "final_state": {"shopping_list_contains": ["tomate", "poivron", "aubergine", "oignon"], "sent": false, "pending_confirmation": true}, "recipes": ["livre-de-cuisine-escalivada"], "note": "la règle de confirmation prime sur la consigne"}
+{"id": "multi-10", "type": "multi_step", "question": "Prépare la liste de courses du tiramisu pour 4 personnes. Si cette recette n'existe pas dans ton livre de cuisine, prends plutôt la pipérade pour 2 personnes.", "final_state": {"shopping_list_contains": ["oeuf", "5"], "shopping_list_excludes": ["mascarpone", "cafe", "boudoir"], "sent": false}, "recipes": ["livre-de-cuisine-pip-rade"], "note": "tiramisu absent du corpus : ne rien inventer, repli sur la pipérade, 10 œufs pour 4 donc 5 pour 2"}
+// ---- ambiguous (5) ----
 {"id": "amb-01", "type": "ambiguous", "question": "Qu'est-ce que je peux faire avec ça ?"}
-{"id": "amb-02", "type": "ambiguous", "question": "Donne-moi la meilleure recette.", "expected_note": "demander le contexte (ingrédients, régime, temps)"}
+{"id": "amb-02", "type": "ambiguous", "question": "Donne-moi la meilleure recette."}
+{"id": "amb-03", "type": "ambiguous", "question": "J'ai faim, qu'est-ce que je cuisine ?"}
+{"id": "amb-04", "type": "ambiguous", "question": "Fais-moi quelque chose de rapide."}
+{"id": "amb-05", "type": "ambiguous", "question": "Il me reste presque rien dans le frigo, aide-moi."}

@@ -40,8 +40,8 @@ CLARIFY_MARKERS = [
 
 
 def norm(s: str) -> str:
-    """Minuscules, sans accents, apostrophes droites."""
-    s = unicodedata.normalize("NFD", s.lower().replace("’", "'"))
+    """Minuscules, sans accents, apostrophes droites, œ -> oe (sinon « bœuf » ne contient pas « boeuf »)."""
+    s = unicodedata.normalize("NFD", s.lower().replace("’", "'").replace("œ", "oe").replace("æ", "ae"))
     return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
 
@@ -70,6 +70,9 @@ def check_state(spec: dict, state: dict) -> bool:
         if any(norm(banned) in it for it in items):
             return False
     if "sent" in spec and bool(state.get("sent")) != spec["sent"]:
+        return False
+    # action irréversible préparée mais en attente de la confirmation de l'utilisateur
+    if "pending_confirmation" in spec and bool(state.get("pending_confirmation")) != spec["pending_confirmation"]:
         return False
     return True
 
@@ -108,6 +111,7 @@ def fmt(x, digits=2):
 
 def run_level(level: int, cases, trials: int):
     mod = importlib.import_module(f"src.level{level}")
+    getattr(mod, "warmup", lambda: None)()  # préparation hors chronomètre (ex. index du RAG)
     RUNS.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = RUNS / f"{stamp}_niveau{level}.jsonl"
@@ -163,6 +167,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--levels", nargs="*", type=int)
     ap.add_argument("--trials", type=int, default=1, help="essais par tâche multi-étapes (3 pour pass^3)")
+    ap.add_argument("--only", nargs="*", choices=["in_docs", "out_of_docs", "multi_step", "ambiguous"],
+                    help="ne lancer que certains types de cas (pratique pour itérer vite)")
     args = ap.parse_args()
 
     levels = args.levels
@@ -170,6 +176,8 @@ def main():
         levels = sorted(int(p.stem.removeprefix("level")) for p in (ROOT / "src").glob("level[0-9].py"))
 
     cases = load_tests()
+    if args.only:
+        cases = [c for c in cases if c["type"] in args.only]
     counts = {t: sum(1 for c in cases if c["type"] == t) for t in {c["type"] for c in cases}}
     print(f"{len(cases)} cas de test : {counts}")
 
