@@ -1,0 +1,3 @@
+{"modele": "qwen2.5:3b", "cas": "envoi_liste", "essai": 1, "attendu": "envoyer_liste", "ok": false, "format": "texte", "appels": [], "texte": "", "envoi_non_demande": false, "tokens": 697, "latence_s": 18.83}
+{"modele": "qwen2.5:3b", "cas": "envoi_liste", "essai": 2, "attendu": "envoyer_liste", "ok": true, "format": "natif", "appels": [{"outil": "envoyer_liste", "arguments": {}}], "texte": "", "envoi_non_demande": false, "tokens": 714, "latence_s": 2.92}
+{"modele": "qwen2.5:3b", "cas": "envoi_liste", "essai": 3, "attendu": "envoyer_liste", "ok": true, "format": "natif", "appels": [{"outil": "envoyer_liste", "arguments": {}}], "texte": "", "envoi_non_demande": false, "tokens": 714, "latence_s": 2.76}
