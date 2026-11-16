@@ -1,0 +1,39 @@
+{
+ "lait de coco": {
+  "ok": true,
+  "recherche": "lait de coco",
+  "nombre": 3,
+  "resultats": [
+   {
+    "nom": "Lait de Coco",
+    "marque": "Carrefour",
+    "quantite": "250 ml",
+    "nutriscore": "D",
+    "nova": 1,
+    "kcal_100g": 186,
+    "code": "3560071000066",
+    "url": "https://fr.openfoodfacts.org/produit/3560071000066"
+   },
+   {
+    "nom": "Lait de coco",
+    "marque": "Carrefour",
+    "quantite": "400 ml",
+    "nutriscore": "C",
+    "nova": 4,
+    "kcal_100g": 175,
+    "code": "3560070869886",
+    "url": "https://fr.openfoodfacts.org/produit/3560070869886"
+   },
+   {
+    "nom": "Lait de coco",
+    "marque": "Carrefour",
+    "quantite": "400 ml",
+    "nutriscore": "C",
+    "nova": 4,
+    "kcal_100g": 175,
+    "code": "3560071006846",
+    "url": "https://fr.openfoodfacts.org/produit/3560071006846"
+   }
+  ]
+ }
+}
