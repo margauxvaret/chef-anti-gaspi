@@ -18,9 +18,9 @@ from src import level2  # noqa: E402
 from src import recettes as R  # noqa: E402
 
 
-def appel(nom, **args):
-    return {"id": f"call_{nom}", "type": "function",
-            "function": {"name": nom, "arguments": json.dumps(args, ensure_ascii=False)}}
+def appel(outil_, **args):
+    return {"id": f"call_{outil_}", "type": "function",
+            "function": {"name": outil_, "arguments": json.dumps(args, ensure_ascii=False)}}
 
 
 class FauxModele:
@@ -95,7 +95,7 @@ class Agent(unittest.TestCase):
     # --- l'action irréversible ------------------------------------------------------------------------
 
     def test_envoi_attend_la_confirmation(self):
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], [appel("envoyer_liste")], "Voici ta liste.")
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], [appel("envoyer_liste")], "Voici ta liste.")
         out = self.lancer(m, "Prépare la liste de courses de la pipérade pour 4 personnes puis envoie-la.")
         st = out["state"]
         self.assertFalse(st["sent"])
@@ -107,7 +107,7 @@ class Agent(unittest.TestCase):
         self.assertTrue(protocole.check_state(cas, st))
 
     def test_oui_envoie_sans_appeler_le_modele(self):
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], [appel("envoyer_liste")], "Confirme ?")
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], [appel("envoyer_liste")], "Confirme ?")
         st = self.lancer(m, "Liste de la pipérade puis envoie-la.")["state"]
         personne = FauxModele()
         out = self.lancer(personne, "Oui, envoie-la !", st)
@@ -117,7 +117,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(len(self.envois.read_text(encoding="utf-8").splitlines()), 1)
 
     def test_non_ou_autre_demande_annule_l_envoi(self):
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], [appel("envoyer_liste")], "Confirme ?")
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], [appel("envoyer_liste")], "Confirme ?")
         st = self.lancer(m, "Liste de la pipérade puis envoie-la.")["state"]
         out = self.lancer(FauxModele(), "non", st)
         self.assertFalse(out["state"]["sent"])
@@ -157,7 +157,7 @@ class Agent(unittest.TestCase):
         self.assertFalse(out["steps"][1]["outils"][0]["resultat"]["ok"])
 
     def test_modifier_la_liste_annule_la_confirmation(self):
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], [appel("envoyer_liste")],
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], [appel("envoyer_liste")],
                        [appel("ajouter_a_la_liste", articles=[{"nom": "pain"}])], "Fait.")
         out = self.lancer(m, "Liste de la pipérade, envoie-la, et ajoute du pain.")
         self.assertFalse(out["state"]["pending_confirmation"])
@@ -166,14 +166,14 @@ class Agent(unittest.TestCase):
         articles = [{"nom": "oignons", "quantite": 3}, {"nom": "riz", "quantite": 150, "unite": "g"},
                     {"nom": "poivron", "quantite": 1}]
         m = FauxModele([appel("ajouter_a_la_liste", articles=articles, personnes_recette=4, personnes=8)], "Fait.")
-        out = self.lancer(m, "Chili con carne pour 8 personnes au lieu de 4 : ajoute les oignons à ma liste.")
+        out = self.lancer(m, "Pour 8 personnes au lieu de 4 : ajoute ces articles à ma liste.")
         self.assertEqual(out["state"]["shopping_list"], ["oignons : 6", "riz : 300 g", "poivron : 2"])
         self.assertIn("regle_de_trois", out["steps"][0]["outils"][0]["resultat"])
         self.assertTrue(protocole.check_state({"shopping_list_contains": ["oignon", "6"]}, out["state"]))  # multi-08
         m = FauxModele([appel("ajouter_a_la_liste", articles=[{"nom": "œufs", "quantite": 10},
                                                               {"nom": "poivron rouge", "quantite": 1}],
                               personnes_recette=4, personnes=2)], "Fait.")
-        out = self.lancer(m, "Liste de la pipérade pour 2 personnes.")
+        out = self.lancer(m, "Liste pour 2 personnes au lieu de 4.")
         self.assertEqual(out["state"]["shopping_list"], ["œufs : 5", "poivron rouge : 1"], "on achète des pièces entières")
 
     def test_unites_ramenees_en_g_et_ml_puis_regroupees(self):
@@ -182,14 +182,14 @@ class Agent(unittest.TestCase):
             {"nom": "œufs", "quantite": 4, "unite": "unité"}, {"nom": "paleron", "quantite": 1, "unite": "kg"}])], "Fait.")
         out = self.lancer(m, "Ajoute ça.")
         self.assertEqual(out["state"]["shopping_list"], ["vin blanc : 300 ml", "œufs : 4", "paleron : 1000 g"])
-        m = FauxModele([appel("ajouter_a_la_liste", articles=[{"nom": "vin blanc", "quantite": 20, "unite": "cl"}])], "Ok.")
+        m = FauxModele([appel("ajouter_a_la_liste", articles=[{"nom": "vin blanc", "quantite": 100, "unite": "ml"}])],
+                       [appel("ajouter_recette", recette="Chili con carne", seulement=["vin blanc"])], "Ok.")
         out = self.lancer(m, "Ajoute le vin blanc du chili con carne en millilitres à ma liste.")
+        self.assertIn("ajouter_recette", out["steps"][0]["outils"][0]["resultat"]["erreur"])  # quantité inventée refusée
         self.assertTrue(protocole.check_state({"shopping_list_contains": ["vin blanc", "200"]}, out["state"]))  # multi-04
 
     def test_allergie_declaree_refusee_et_gardee(self):
-        articles = [{"nom": "pâtes de riz", "quantite": 150, "unite": "g"}, {"nom": "œufs", "quantite": 2},
-                    {"nom": "citron vert", "quantite": 1}, {"nom": "cacahuètes (non salées)"}]
-        m = FauxModele([appel("ajouter_a_la_liste", articles=articles)], "Fait.")
+        m = FauxModele([appel("ajouter_recette", recette="pad thaï", personnes=2)], "Fait.")
         out = self.lancer(m, "Je suis allergique aux arachides. Prépare la liste de courses du pad thaï pour 2 personnes.")
         st = out["state"]
         self.assertEqual(st["allergies"], ["arachide"])
@@ -234,7 +234,7 @@ class Agent(unittest.TestCase):
 
     def test_relance_vers_l_envoi_meme_apres_deux_relances_de_liste(self):
         m = FauxModele([appel("rechercher_recettes", requete="pipérade")], "Voici la recette.", "Je vais faire la liste.",
-                       [appel("ajouter_a_la_liste", articles=PIPERADE, personnes_recette=4, personnes=4)],
+                       [appel("ajouter_recette", recette="pipérade", personnes=4)],
                        "Ta liste est prête.", [appel("envoyer_liste")], "Confirme l'envoi.")
         out = self.lancer(m, "Prépare la liste de courses de la pipérade pour 4 personnes puis envoie-la.")
         self.assertEqual(out["relances_par_motif"], {"liste_vide": 2, "envoi": 1})
@@ -281,7 +281,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(len(m.recus), 2)
 
     def test_etat_repart_de_zero_a_chaque_question(self):
-        self.lancer(FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], "Fait."), "Ajoute.")
+        self.lancer(FauxModele([appel("ajouter_recette", recette="pipérade")], "Fait."), "Ajoute.")
         out = self.lancer(FauxModele("Bonjour."), "Bonjour")
         self.assertEqual(out["state"]["shopping_list"], [])
 
@@ -309,7 +309,7 @@ class Agent(unittest.TestCase):
     def test_relance_quand_le_modele_annonce_au_lieu_d_agir(self):
         m = FauxModele([appel("rechercher_recettes", requete="pipérade")],
                        "Je vais maintenant ajouter les ingrédients à votre liste.",
-                       [appel("ajouter_a_la_liste", articles=PIPERADE)], "C'est fait.")
+                       [appel("ajouter_recette", recette="pipérade")], "C'est fait.")
         out = self.lancer(m, "Prépare la liste de courses de la pipérade pour 4 personnes.")
         self.assertEqual(out["relances"], 1)
         self.assertIn("ajouter_a_la_liste", m.recus[2][-1]["content"])  # la consigne renvoyée au modèle
@@ -317,11 +317,11 @@ class Agent(unittest.TestCase):
         self.assertEqual(out["answer"], "C'est fait.")
 
     def test_relance_vers_l_envoi_seulement_si_demande(self):
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], "Voilà.", [appel("envoyer_liste")], "Confirme.")
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], "Voilà.", [appel("envoyer_liste")], "Confirme.")
         out = self.lancer(m, "Prépare la liste de la pipérade et envoie-la.")
         self.assertTrue(out["state"]["pending_confirmation"])
         self.assertFalse(out["state"]["sent"])
-        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], "Voilà.")
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], "Voilà.")
         out = self.lancer(m, "Prépare la liste de la pipérade mais ne l'envoie pas.")
         self.assertEqual(out["relances"], 0)
         self.assertFalse(out["state"]["pending_confirmation"])
@@ -353,7 +353,8 @@ class Agent(unittest.TestCase):
             "multi-03": [[appel("ajouter_recette", recette="chili con carne", personnes=4,
                                 sauf=["la viande", "le vin blanc", "les épices"])]],
             "multi-04": [[appel("ajouter_recette", recette="chili con carne", seulement=["vin blanc"])]],
-            "multi-05": [[appel("ajouter_a_la_liste", articles=[{"nom": "lait de coco", "quantite": 1, "unite": "boîte"}])]],
+            "multi-05": [[appel("chercher_produit", nom="lait de coco en boîte")],
+                         [appel("ajouter_a_la_liste", articles=[{"nom": "lait de coco en boîte", "quantite": 1}])]],
             "multi-06": [[appel("ajouter_recette", recette="pipérade"), appel("ajouter_recette", recette="pan bagnat")]],
             "multi-07": [[appel("ajouter_recette", recette="pad thaï", personnes=2)]],
             "multi-08": [[appel("ajouter_recette", recette="chili con carne", personnes=8, seulement=["oignons"])]],
@@ -363,15 +364,17 @@ class Agent(unittest.TestCase):
         }
         cas = [c for c in protocole.load_tests() if c["type"] == "multi_step"]
         self.assertEqual({c["id"] for c in cas}, set(bons_appels))
+        reel = level2.executer_tool
+        off = lambda nom, args: {"ok": True, "produits": []} if nom == "chercher_produit" else reel(nom, args)  # noqa: E731
         for c in cas:
-            with self.subTest(cas=c["id"]):
+            with self.subTest(cas=c["id"]), mock.patch.object(level2, "executer_tool", off):
                 out = self.lancer(FauxModele(*bons_appels[c["id"]], "Fait."), c["question"])
                 self.assertTrue(protocole.check_state(c["final_state"], out["state"]), out["state"]["shopping_list"])
 
     def test_ajouter_recette_inconnue_ou_ingredient_absent(self):
         m = FauxModele([appel("ajouter_recette", recette="tiramisu")],
                        [appel("ajouter_recette", recette="pipérade", seulement=["mascarpone"])], "Désolé.")
-        out = self.lancer(m, "Liste du tiramisu")
+        out = self.lancer(m, "Liste du tiramisu, sinon le mascarpone de la pipérade")
         self.assertIn("Pas de recette « tiramisu »", out["steps"][0]["outils"][0]["resultat"]["erreur"])
         self.assertIn("Aucun ingrédient", out["steps"][1]["outils"][0]["resultat"]["erreur"])
         self.assertEqual(out["state"]["shopping_list"], [])
@@ -379,11 +382,54 @@ class Agent(unittest.TestCase):
     def test_sauf_comprend_les_categories(self):
         m = FauxModele([appel("ajouter_recette", recette="chili con carne", sauf="la viande, les épices et le vin blanc")],
                        "Fait.")
-        out = self.lancer(m, "Liste du chili")
+        out = self.lancer(m, "Liste du chili con carne, j'ai déjà la viande, les épices et le vin blanc.")
         res = out["steps"][0]["outils"][0]["resultat"]
         self.assertIn("cumin", " ".join(res["retires"]))
         self.assertIn("paleron ou de basse côte", res["retires"])
         self.assertTrue(any("haricots" in x for x in out["state"]["shopping_list"]))
+
+    def test_sauf_et_seulement_non_mentionnes_sont_ignores(self):
+        """Run du 17/11 (multi-02) : le modèle retirait les poivrons sans que l'utilisateur l'ait demandé."""
+        m = FauxModele([appel("ajouter_recette", recette="Pipérade", personnes=4, sauf=["poivron rouge", "poivron vert"])],
+                       "Fait.")
+        out = self.lancer(m, "Prépare la liste de courses de la pipérade pour 4 personnes.")
+        res = out["steps"][0]["outils"][0]["resultat"]
+        self.assertEqual(res["ignores"]["sauf"], ["poivron rouge", "poivron vert"])
+        self.assertTrue(any("poivron" in x for x in out["state"]["shopping_list"]))
+
+    def test_recette_non_demandee_refusee(self):
+        """Run du 17/11 (multi-10) : la pizza proposée par la recherche au lieu de la pipérade demandée en repli."""
+        m = FauxModele([appel("ajouter_recette", recette="Pizza au tofu et aux champignons2", personnes=4)],
+                       [appel("ajouter_recette", recette="pipérade", personnes=2)], "Fait.")
+        out = self.lancer(m, "Prépare la liste de courses du tiramisu pour 4 personnes. Si cette recette n'existe pas "
+                             "dans ton livre de cuisine, prends plutôt la pipérade pour 2 personnes.")
+        self.assertIn("Pipérade", out["steps"][0]["outils"][0]["resultat"]["erreur"])
+        self.assertIn("œufs : 5", out["state"]["shopping_list"])
+
+    def test_recette_trouvee_par_la_recherche_acceptee_si_aucune_n_est_citee(self):
+        question = "Trouve-moi un plat avec mes restes et mets ses ingrédients dans ma liste."
+        self.assertEqual(level2.R.recettes_citees([question]), [])
+        out = self.lancer(FauxModele([appel("ajouter_recette", recette="escalivada")], "Fait."), question)
+        self.assertTrue(out["state"]["shopping_list"])
+
+    def test_ingredient_d_une_recette_citee_pris_dans_le_livre(self):
+        """Run du 17/11 (multi-08) : « oignons : 3 cuillère à soupe » et « oignons : 2 g » inventés."""
+        m = FauxModele([appel("ajouter_a_la_liste", articles=[{"nom": "oignons", "quantite": 1.5, "unite": "cuillère à soupe"}])],
+                       [appel("ajouter_recette", recette="chili con carne", personnes=8, seulement=["oignons"])], "Fait.")
+        out = self.lancer(m, "Je cuisine le chili con carne pour 8 personnes au lieu de 4. Ajoute à ma liste les oignons "
+                             "avec la bonne quantité.")
+        self.assertEqual(out["state"]["shopping_list"], ["oignons : 6"])
+
+    def test_produit_cherche_dans_open_food_facts_pas_redirige(self):
+        """multi-05 : un produit trouvé dans Open Food Facts peut être ajouté tel quel, même s'il est dans la recette."""
+        reel = level2.executer_tool
+        faux = lambda nom, args: {"ok": True, "produits": [{"nom": "Lait de coco"}]} if nom == "chercher_produit" else reel(nom, args)  # noqa: E731
+        m = FauxModele([appel("chercher_produit", nom="lait de coco en boîte")],
+                       [appel("ajouter_a_la_liste", articles=[{"nom": "lait de coco en boîte", "quantite": 1}])], "Fait.")
+        with mock.patch.object(level2, "executer_tool", faux):
+            out = self.lancer(m, "Cherche dans Open Food Facts un lait de coco en boîte et ajoute-le à ma liste de courses "
+                                 "pour le porc au lait de coco.")
+        self.assertEqual(out["state"]["shopping_list"], ["lait de coco en boîte : 1"])
 
     def test_un_envoi_rate_peut_etre_refait(self):
         """Run du 17/11 (multi-09) : envoyer_liste appelé quand la liste était vide, puis refusé comme « identique »."""

@@ -28,6 +28,9 @@ Réglages (variables d'environnement) :
 Règles métier tenues par le code (et non par le prompt), voir _ajouter :
     - quantités positives ; unités métriques ramenées en g et ml ; doublons regroupés ;
     - ingrédients lus par le code dans le livre, règle de trois faite par le code, pas par le modèle ;
+    - ancrage dans la demande : « sauf » et « seulement » ne gardent que ce que l'utilisateur a écrit ; une recette
+      non demandée est refusée quand l'utilisateur en a cité ; un ingrédient d'une recette citée passe par
+      ajouter_recette (quantités du livre) et non par ajouter_a_la_liste (quantités inventées) ;
     - allergies déclarées (« je suis allergique aux arachides ») : les articles concernés sont refusés ;
     - pas d'envoi d'une liste vide ; liste modifiée = confirmation annulée ; appel identique refusé.
     LEVEL2_TOP_K               extraits renvoyés par recherche (défaut 3 ; le contexte d'Ollama est limité)
@@ -260,15 +263,31 @@ CATEGORIES = {
 }
 
 
+def _sans_article(terme):
+    """« de la farine » -> « farine »"""
+    t = norm(terme).strip()
+    while True:
+        court = re.sub(r"^(?:(?:les|le|la|des|du|de)\s+|(?:l'|d')\s*)", "", t)
+        if court == t:
+            return t
+        t = court
+
+
 def _developper(terme):
     """« les épices » -> les ingrédients de la catégorie ; sinon le terme lui-même."""
-    sans_article = norm(terme).strip()
-    while True:  # « de la farine » -> « farine »
-        court = re.sub(r"^(?:(?:les|le|la|des|du|de)\s+|(?:l'|d')\s*)", "", sans_article)
-        if court == sans_article:
-            break
-        sans_article = court
-    return CATEGORIES.get(R.cle(sans_article), [sans_article])
+    t = _sans_article(terme)
+    return CATEGORIES.get(R.cle(t), [t])
+
+
+def _textes_utilisateur(ex):
+    return [ex.question] + [m["content"] for m in ex.state["historique"] if m["role"] == "user"]
+
+
+def _ancrer(termes, ex):
+    """Ne garde que les termes que l'utilisateur a vraiment écrits. Retourne (gardés, ignorés)."""
+    textes = _textes_utilisateur(ex)
+    gardes = [t for t in termes if any(R.contient(x, _sans_article(t)) for x in textes)]
+    return gardes, [t for t in termes if t not in gardes]
 
 
 def _textes(valeur):
@@ -322,6 +341,8 @@ class _Execution:
         self.liste_modifiee = False
         self.envoi_prepare = False
         self.demande_liste = False
+        self.question = ""
+        self.produits_cherches = []   # noms passés à chercher_produit (exception à la redirection vers la recette)
         self.relances = 0
         self.relances_par_motif = {}
 
@@ -484,26 +505,36 @@ def _ajouter(args, st):
 def _ajouter_recette(args, ex):
     nom = str(args.get("recette") or "").strip()
     doc = R.trouver_recette(nom)
+    # recettes du livre citées dans la conversation (l'utilisateur, ou l'assistant à un tour précédent)
+    citees = R.recettes_citees(_textes_utilisateur(ex) + [m["content"] for m in ex.state["historique"]])
+    titres_cites = ", ".join(R.recettes()[d]["titre"] for d in citees)
     if not doc:
         ranked, _ = level1.retrieve(nom) if nom else ([], None)
         proches = [R.recettes()[d]["titre"] for d in level1.doc_ranking(ranked)[:3] if d in R.recettes()]
         return {"ok": False, "erreur": f"Pas de recette « {nom} » dans le livre (recettes proches : "
                 f"{', '.join(proches) or 'aucune'}). N'invente pas ses ingrédients : applique la solution de repli "
-                "de l'utilisateur s'il en a donné une, sinon dis-lui que ce plat n'est pas dans le livre."}
+                "de l'utilisateur s'il en a donné une, sinon dis-lui que ce plat n'est pas dans le livre."
+                + (f" Recettes du livre citées par l'utilisateur : {titres_cites}." if citees else "")}
+    if citees and doc not in citees:  # run du 17/11 (multi-10) : la pizza proposée par la recherche au lieu de la pipérade
+        return {"ok": False, "erreur": f"L'utilisateur n'a pas demandé « {R.recettes()[doc]['titre']} ». Recettes du "
+                f"livre citées dans sa demande : {titres_cites}. Si le plat demandé n'est pas dans le livre, applique "
+                "sa solution de repli."}
     titre = R.recettes()[doc]["titre"]
     personnes_recette, articles = R.lire_ingredients(R.recettes()[doc]["texte"])
     if len(articles) < 2:
         return {"ok": False, "erreur": f"Les ingrédients de « {titre} » ne sont pas lisibles automatiquement : "
                                        "utilise rechercher_recettes puis ajouter_a_la_liste."}
     tous = [a["nom"] for a in articles]
-    seulement = _textes(args.get("seulement"))
+    # run du 17/11 (multi-02, multi-03) : le modèle retirait des ingrédients que l'utilisateur n'avait pas cités
+    seulement, seulement_ignores = _ancrer(_textes(args.get("seulement")), ex)
+    sauf, sauf_ignores = _ancrer(_textes(args.get("sauf")), ex)
     if seulement:
         articles = [a for a in articles if any(R.contient(a["nom"], t) for t in seulement)]
         if not articles:
             return {"ok": False, "erreur": f"Aucun ingrédient « {', '.join(seulement)} » dans « {titre} ». "
                                            f"Ingrédients : {', '.join(tous)}."}
     retires = []
-    termes = [m for t in _textes(args.get("sauf")) for m in _developper(t)]
+    termes = [m for t in sauf for m in _developper(t)]
     if termes:
         retires = [a["nom"] for a in articles if any(R.contient(a["nom"], m) for m in termes)]
         articles = [a for a in articles if a["nom"] not in retires]
@@ -522,9 +553,39 @@ def _ajouter_recette(args, ex):
     res.update(recette=titre, personnes_recette=personnes_recette)
     if retires:
         res["retires"] = retires
+    if sauf_ignores or seulement_ignores:
+        res["ignores"] = {"sauf": sauf_ignores, "seulement": seulement_ignores,
+                          "raison": "non mentionnés par l'utilisateur"}
     if remarques:
         res["remarques"] = res.get("remarques", []) + remarques
     return res
+
+
+def _redirection_vers_recette(args, ex):
+    """Un article d'une recette citée par l'utilisateur doit venir du livre (run du 17/11, multi-04 et multi-08 :
+    « vin blanc : 100 ml » et « oignons : 2 g » inventés). Retourne l'erreur à renvoyer au modèle, ou None."""
+    citees = R.recettes_citees(_textes_utilisateur(ex))
+    articles = args.get("articles")
+    if isinstance(articles, str):
+        try:
+            articles = json.loads(articles)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(articles, dict):
+        articles = [articles]
+    if not citees or not isinstance(articles, list):
+        return None
+    noms = [str(a.get("nom") if isinstance(a, dict) else a) for a in articles]
+    noms = [n for n in noms if not any(R.contient(n, p) or R.contient(p, n) for p in ex.produits_cherches)]
+    for doc in citees:
+        ingredients = [i["nom"] for i in R.lire_ingredients(R.recettes()[doc]["texte"])[1]]
+        venus = [n for n in noms if any(R.contient(n, i) or R.contient(i, n) for i in ingredients)]
+        if venus:
+            titre = R.recettes()[doc]["titre"]
+            return {"ok": False, "erreur": f"{', '.join(venus)} : ingrédient(s) de la recette « {titre} » du livre. "
+                    f"Utilise ajouter_recette(recette=\"{titre}\", personnes, seulement={json.dumps(venus, ensure_ascii=False)}) "
+                    "pour avoir les quantités du livre."}
+    return None
 
 
 def _demander_confirmation(st):
@@ -534,13 +595,10 @@ def _demander_confirmation(st):
     if st["sent"]:
         return {"ok": False, "erreur": "Cette liste a déjà été envoyée."}
     if st["pending_confirmation"]:
-        return {"ok": True, "statut": "deja_en_attente",
-                "message": "L'envoi attend déjà la confirmation de l'utilisateur : ne rappelle pas envoyer_liste, "
-                           "termine ta réponse."}
+        return {"ok": True, "statut": "deja_en_attente", "detail": "envoi déjà en attente de la confirmation"}
     st["pending_confirmation"] = True
     return {"ok": True, "statut": "en_attente_de_confirmation", "liste": st["shopping_list"],
-            "message": "Rien n'est envoyé pour l'instant : l'utilisateur doit répondre « oui » pour confirmer. "
-                       "Résume la liste et dis-lui de confirmer."}
+            "detail": "rien n'est envoyé : le système demande la confirmation à l'utilisateur"}
 
 
 def _envoyer(st):
@@ -567,11 +625,16 @@ def _executer(nom, args, ex):
             ex.envoi_prepare = ex.envoi_prepare or bool(res.get("ok"))
         elif nom == "rechercher_recettes":
             res = _rechercher(args, ex)
-        elif nom in ("ajouter_a_la_liste", "ajouter_recette"):
-            res = _ajouter(args, ex.state) if nom == "ajouter_a_la_liste" else _ajouter_recette(args, ex)
+        elif nom == "ajouter_recette":
+            res = _ajouter_recette(args, ex)
+            ex.liste_modifiee = ex.liste_modifiee or bool(res.get("ok"))
+        elif nom == "ajouter_a_la_liste":
+            res = _redirection_vers_recette(args, ex) or _ajouter(args, ex.state)
             ex.liste_modifiee = ex.liste_modifiee or bool(res.get("ok"))
         else:
             res = executer_tool(nom, args)
+            if nom == "chercher_produit" and res.get("ok") and args.get("nom"):
+                ex.produits_cherches.append(str(args["nom"]))
     except Exception as e:  # filet de sécurité : l'agent ne plante jamais à cause d'un outil
         res = {"ok": False, "erreur": f"Erreur dans l'outil {nom} : {type(e).__name__}: {e}"}
     # On ne mémorise que les appels réussis : un appel qui a échoué (liste encore vide, etc.) peut être refait.
@@ -738,6 +801,7 @@ def answer(question: str, state: dict = None) -> dict:
         if a not in st["allergies"]:
             st["allergies"].append(a)
     ex.demande_liste = demande_liste(question)
+    ex.question = question
 
     messages = [{"role": "system", "content": _system(st)}, *st["historique"], {"role": "user", "content": question}]
 

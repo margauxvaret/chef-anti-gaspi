@@ -57,7 +57,16 @@ _MOTS_VIDES = {"pour", "personne", "recette", "avec", "dans", "sans", "liste", "
 
 
 def mots_significatifs(texte):
-    return {m for m in cle(texte).split() if len(m) >= 4 and m not in _MOTS_VIDES}
+    return {m for m in _mots(texte).split() if len(m) >= 4 and m not in _MOTS_VIDES}
+
+
+def recettes_citees(textes):
+    """Recettes du livre dont tous les mots significatifs du titre apparaissent dans ces textes
+    (« prends plutôt la pipérade » cite la Pipérade)."""
+    mots = set()
+    for t in textes:
+        mots |= set(_mots(t).split())
+    return [d for d, r in recettes().items() if mots_significatifs(r["titre"]) and mots_significatifs(r["titre"]) <= mots]
 
 
 def trouver_recette(nom):
