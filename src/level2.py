@@ -20,14 +20,21 @@ Réglages (variables d'environnement) :
     LEVEL2_TEMPERATURE         défaut 0.3, avec une seed tirée au hasard (notée dans la sortie) : à 0, les 3 essais
                                de pass^3 seraient identiques ; à 0.7, qwen2.5:3b divaguait (run du 16/11)
     LEVEL2_RELANCE             1 (défaut) = si le modèle répond en texte alors que la tâche n'est pas faite (liste
-                               demandée mais vide, envoi demandé mais pas préparé, « je vais… »), le code le relance,
-                               2 fois au plus. 0 = désactivé (pour mesurer l'effet des relances)
+                               demandée mais vide, envoi demandé mais pas préparé, « je vais… »), le code le relance :
+                               2 fois au plus par motif, 3 en tout. 0 = désactivé (pour mesurer l'effet des relances)
+
+Règles métier tenues par le code (et non par le prompt), voir _ajouter :
+    - quantités positives ; unités métriques ramenées en g et ml ; doublons regroupés ;
+    - règle de trois faite par le code (personnes_recette -> personnes), pas par le modèle ;
+    - allergies déclarées (« je suis allergique aux arachides ») : les articles concernés sont refusés ;
+    - pas d'envoi d'une liste vide ; liste modifiée = confirmation annulée ; appel identique refusé.
     LEVEL2_TOP_K               extraits renvoyés par recherche (défaut 3 ; le contexte d'Ollama est limité)
     LEVEL2_RECHERCHE_INITIALE  1 = le code lance la recherche sur la question avant le premier appel au modèle
                                (variante à mesurer contre 0, le défaut, où le modèle décide seul)
 """
 import copy
 import json
+import math
 import os
 import random
 import re
@@ -50,7 +57,9 @@ TEMPERATURE = float(os.getenv("LEVEL2_TEMPERATURE", "0.3"))
 TOP_K = int(os.getenv("LEVEL2_TOP_K", "3"))
 RECHERCHE_INITIALE = os.getenv("LEVEL2_RECHERCHE_INITIALE", "0") == "1"
 RELANCE = os.getenv("LEVEL2_RELANCE", "1") == "1"
-MAX_RELANCES = 2
+MAX_RELANCES = 3       # en tout par question
+MAX_PAR_MOTIF = 2      # par motif de relance
+MAX_EXTRAITS_RECETTE = 4
 MAX_SORTIE = 1024     # tokens par réponse du modèle : une liste de 20 articles en JSON dépasse 512
 MAX_ARTICLES = 60
 HISTORIQUE = 6        # messages (questions et réponses) gardés d'un tour à l'autre
@@ -90,12 +99,16 @@ SCHEMAS = [
             {"requete": {"type": "string", "description": "Plat ou ingrédients recherchés, ex. pipérade"}}, ["requete"]),
     *_outils_de_base(),
     _schema("ajouter_a_la_liste",
-            "Ajoute des articles à la liste de courses (action modifiable). Mettre tous les articles en un seul appel.",
+            "Ajoute des articles à la liste de courses (action modifiable). Mettre tous les articles en un seul appel. "
+            "Recopier les quantités de la recette sans les modifier : le système fait la règle de trois à partir de "
+            "personnes_recette et personnes.",
             {"articles": {"type": "array", "items": {"type": "object", "properties": {
                 "nom": {"type": "string", "description": "ex. oignons"},
-                "quantite": {"type": "number", "description": "ex. 6 (facultatif)"},
-                "unite": {"type": "string", "description": "ex. g, ml (facultatif)"}},
-                "required": ["nom"]}}},
+                "quantite": {"type": "number", "description": "quantité écrite dans la recette, ex. 3 (facultatif)"},
+                "unite": {"type": "string", "description": "ex. g, cl, gousse ; rien pour un nombre de pièces"}},
+                "required": ["nom"]}},
+             "personnes_recette": {"type": "integer", "description": "nombre de personnes prévu par la recette"},
+             "personnes": {"type": "integer", "description": "nombre de personnes demandé par l'utilisateur"}},
             ["articles"]),
     _schema("envoyer_liste",
             "Envoie la liste de courses. Action irréversible : le système demande lui-même la confirmation "
@@ -109,7 +122,7 @@ QUESTION sur une recette : appelle rechercher_recettes, puis réponds avec les e
 
 LISTE DE COURSES :
 1) rechercher_recettes avec le nom du plat ;
-2) ajouter_a_la_liste en UN appel avec les ingrédients de cette recette : quantités adaptées au nombre de personnes (règle de trois), sans ce que l'utilisateur a déjà ni ce qu'il ne peut pas manger ;
+2) ajouter_a_la_liste en UN appel avec les ingrédients de la section Ingrédients de cette recette (pas les accompagnements ni les boissons suggérés) : recopie les quantités sans les changer, donne personnes_recette et personnes (le système fait la règle de trois), et retire ce que l'utilisateur a déjà ;
 3) si l'utilisateur demande l'envoi : envoyer_liste. Le système lui demande la confirmation ; n'écris jamais que la liste est envoyée ;
 4) une réponse courte.
 Si le plat demandé n'est dans aucun extrait, n'invente pas ses ingrédients : dis-le, ou suis la solution de repli proposée par l'utilisateur.
@@ -150,6 +163,88 @@ def _cle(nom):
     return " ".join(m[:-1] if len(m) > 3 and m[-1] in "sx" else m for m in re.findall(r"[a-z0-9']+", norm(nom)))
 
 
+# Unités métriques ramenées à g et ml : « 20 cl » et « 100 ml » de vin blanc se regroupent en une ligne.
+_VOLUMES = {"ml": 1, "millilitre": 1, "cl": 10, "centilitre": 10, "dl": 100, "l": 1000, "litre": 1000}
+_MASSES = {"g": 1, "gr": 1, "gramme": 1, "kg": 1000, "kilo": 1000, "kilogramme": 1000, "mg": 0.001}
+_SANS_UNITE = {"unite", "piece", "u", "pc", "pcs", "nombre"}
+
+
+def _normaliser_unite(q, unite):
+    """(quantité, unité) -> (quantité, unité) en g ou ml quand c'est possible ; les autres unités restent."""
+    u = norm(unite).strip().rstrip(".")
+    u_sing = u[:-1] if len(u) > 2 and u.endswith("s") else u
+    if u_sing in _SANS_UNITE or u in _SANS_UNITE:
+        return q, ""
+    for table, cible in ((_VOLUMES, "ml"), (_MASSES, "g")):
+        facteur = table.get(u, table.get(u_sing))
+        if facteur is not None:
+            return (None if q is None else q * facteur), cible
+    return q, unite
+
+
+def _arrondir(q, unite):
+    """Après une règle de trois : on achète des pièces entières ; g et ml arrondis à l'unité."""
+    if unite in ("g", "ml"):
+        return float(round(q)) if q >= 10 else round(q, 1)
+    return float(math.ceil(q - 1e-9))
+
+
+# Allergies : un mot déclaré par l'utilisateur -> les mots qui le désignent dans un nom d'ingrédient.
+ALLERGENES = {
+    "arachide": ["arachide", "cacahuete", "cacahouete"],
+    "fruits a coque": ["noix", "noisette", "amande", "pistache", "cajou", "pecan", "macadamia"],
+    "lait": ["lait", "beurre", "creme", "fromage", "yaourt", "mozzarella", "emmental", "parmesan", "gruyere"],
+    "lactose": ["lait", "beurre", "creme", "fromage", "yaourt", "mozzarella", "emmental", "parmesan", "gruyere"],
+    "oeuf": ["oeuf"],
+    "poisson": ["poisson", "thon", "saumon", "anchois", "cabillaud", "sardine", "maquereau", "nam pla", "nuoc mam"],
+    "crustace": ["crevette", "crabe", "homard", "langoustine", "ecrevisse"],
+    "gluten": ["ble", "farine", "pain", "chapelure", "semoule", "seigle", "orge", "epeautre", "biscuit"],
+    "soja": ["soja"],
+    "sesame": ["sesame"],
+    "moutarde": ["moutarde"],
+    "celeri": ["celeri"],
+}
+_ALLERGIE = re.compile(r"allergi(?:que|e)s?\s+(?:aux|au|a la|a l'|a|d'|de|des)\s*([^.;!?\n]+)")
+_PREPOSITIONS = re.compile(r"^(?:aux|au|a la|a l'|a|d'|de|des|du|la|le|les)\s+")
+
+
+def allergies_declarees(texte):
+    """« Je suis allergique aux arachides et au lait » -> ["arachide", "lait"].
+    Un allergène hors de la table est gardé s'il tient en un mot (ex. « kiwi »)."""
+    trouvees = []
+    for groupe in _ALLERGIE.findall(norm(texte)):
+        for partie in re.split(r",|\bet\b|\bou\b", groupe):
+            mot = _cle(_PREPOSITIONS.sub("", partie.strip()))
+            if not mot:
+                continue
+            cle = next((k for k in ALLERGENES if _cle(k) == mot), None)
+            if cle is None and len(mot.split()) != 1:
+                continue  # morceau de phrase (« prepare la liste »), pas un allergène
+            cle = cle or mot
+            if cle not in trouvees:
+                trouvees.append(cle)
+    return trouvees
+
+
+def _allergene(nom, allergies):
+    """Premier allergène déclaré présent dans le nom (mots entiers : « lait » ne bloque pas « laitue »)."""
+    n = f" {_cle(nom)} "
+    for a in allergies:
+        if any(f" {_cle(m)} " in n for m in ALLERGENES.get(a, [a])):
+            return a
+    return None
+
+
+_MOTS_VIDES = {"pour", "personne", "personnes", "recette", "recettes", "avec", "dans", "sans", "liste", "course",
+               "courses", "ingredient", "ingredients", "quantite", "faire", "comment", "plat"}
+
+
+def titre_correspond(requete, titre):
+    """La requête nomme-t-elle cette recette ? (au moins un mot significatif en commun avec le titre)"""
+    mots = {m for m in _cle(requete).split() if len(m) >= 4 and m not in _MOTS_VIDES}
+    return bool(mots & set(_cle(titre).split())) if mots else True
+
+
 def _libelle(article):
     if article.get("quantite") is None:
         return article["nom"]
@@ -179,7 +274,9 @@ class _Execution:
         self.deja_vus = set()     # appels déjà exécutés (outil + arguments)
         self.liste_modifiee = False
         self.envoi_prepare = False
+        self.demande_liste = False
         self.relances = 0
+        self.relances_par_motif = {}
 
 
 def _etat(state):
@@ -188,6 +285,7 @@ def _etat(state):
     st.setdefault("sent", False)
     st.setdefault("pending_confirmation", False)
     st.setdefault("historique", [])
+    st.setdefault("allergies", [])
     st["shopping_list"] = [_libelle(a) for a in st["articles"]]  # format lu par eval.py : liste de textes
     return st
 
@@ -203,8 +301,12 @@ def _rechercher(args, ex):
         ex.retrieved = level1.doc_ranking(ranked)
     if not ranked or (level1.MIN_SIM > 0 and best_sim is not None and best_sim < level1.MIN_SIM):
         return {"ok": True, "extraits": [],
-                "remarque": f"Aucun extrait pertinent. Pour une question de recette, réponds « {ABSTAIN} »"}
+                "remarque": f"Aucune recette trouvée pour « {requete} ». Pour une question, réponds « {ABSTAIN} » ; "
+                            "pour une liste de courses, dis que ce plat n'est pas dans le livre, ou suis la solution "
+                            "de repli proposée par l'utilisateur."}
     chunks = level1.get_index().chunks
+    if ex.demande_liste:
+        return _recette_complete(requete, ranked, chunks, ex)
     extraits = []
     for i in ranked[:TOP_K]:
         if i not in ex.extraits:
@@ -215,6 +317,37 @@ def _rechercher(args, ex):
     return {"ok": True, "recettes_trouvees": recettes, "extraits": extraits,
             "suite": "Pour une question : réponds avec ces extraits en citant [n]. Pour une liste de courses : "
                      "appelle maintenant ajouter_a_la_liste avec les ingrédients de la bonne recette."}
+
+
+_PERSONNES = re.compile(r"pour\s+(\d+)\s+personnes", re.I)
+
+
+def _recette_complete(requete, ranked, chunks, ex):
+    """Pour une liste de courses : UNE recette entière (la mieux classée) plutôt que des extraits de recettes
+    différentes, que qwen2.5:3b mélangeait (run du 17/11 : semoule et harissa dans le chili con carne)."""
+    docs = level1.doc_ranking(ranked)
+    meilleur = docs[0]
+    ids = [i for i, c in enumerate(chunks) if c["doc_id"] == meilleur]
+    if len(ids) > MAX_EXTRAITS_RECETTE:  # longue recette : le début (ingrédients) et les extraits les mieux classés
+        rang = {i: r for r, i in enumerate(ranked)}
+        ids = sorted([ids[0]] + sorted(ids[1:], key=lambda i: rang.get(i, 10 ** 6))[:MAX_EXTRAITS_RECETTE - 1])
+    extraits = []
+    for i in ids:
+        if i not in ex.extraits:
+            ex.extraits.append(i)
+        extraits.append({"n": ex.extraits.index(i) + 1, "texte": chunks[i]["text"]})
+    titre = level1.short_title(chunks[ids[0]]["title"])
+    m = _PERSONNES.search(" ".join(chunks[i]["text"] for i in ids))
+    res = {"ok": True, "recette": titre, "personnes_recette": int(m.group(1)) if m else None, "extraits": extraits,
+           "autres_recettes_proches": [level1.short_title(next(c["title"] for c in chunks if c["doc_id"] == d))
+                                       for d in docs[1:4]]}
+    if not titre_correspond(requete, titre):
+        res["attention"] = (f"Aucune recette du livre ne s'appelle « {requete} ». « {titre} » est seulement la plus "
+                            "proche : si l'utilisateur voulait précisément ce plat, il n'est pas dans le livre.")
+    res["suite"] = ("Appelle maintenant ajouter_a_la_liste avec les ingrédients de cette recette (quantités "
+                    "recopiées, personnes_recette et personnes), ou rechercher_recettes avec le nom exact d'une "
+                    "autre recette si ce n'est pas la bonne.")
+    return res
 
 
 def _ajouter(args, st):
@@ -228,6 +361,17 @@ def _ajouter(args, st):
         articles = [articles]
     if not isinstance(articles, list) or not articles:
         return {"ok": False, "erreur": 'Donner une liste non vide, ex. [{"nom": "oignons", "quantite": 6}].'}
+
+    facteur = None
+    pr, pv = args.get("personnes_recette"), args.get("personnes")
+    if pr not in (None, "") and pv not in (None, ""):
+        try:
+            pr, pv = int(_nombre(pr)), int(_nombre(pv))
+        except ValueError:
+            return {"ok": False, "erreur": "personnes_recette et personnes doivent être des nombres entiers."}
+        if not (1 <= pr <= 100 and 1 <= pv <= 100):
+            return {"ok": False, "erreur": "personnes_recette et personnes doivent être entre 1 et 100."}
+        facteur = pv / pr if pv != pr else None
 
     remarques = []
     if st["sent"]:
@@ -257,7 +401,13 @@ def _ajouter(args, st):
             if q <= 0:
                 refuses.append({"article": nom, "raison": "la quantité doit être positive"})
                 continue
-        unite = str(a.get("unite") or "").strip()
+        allergene = _allergene(nom, st.get("allergies", []))
+        if allergene:
+            refuses.append({"article": nom, "raison": f"allergie déclarée : {allergene}"})
+            continue
+        q, unite = _normaliser_unite(q, str(a.get("unite") or "").strip())
+        if facteur and q is not None:
+            q = _arrondir(q * facteur, unite)
         # règle : même produit et même unité -> une seule ligne, quantités additionnées
         existant = next((x for x in st["articles"]
                          if _cle(x["nom"]) == _cle(nom) and norm(x.get("unite")) == norm(unite)), None)
@@ -273,6 +423,8 @@ def _ajouter(args, st):
 
     st["shopping_list"] = [_libelle(a) for a in st["articles"]]
     res = {"ok": bool(ajoutes), "ajoutes": ajoutes, "liste": st["shopping_list"]}
+    if facteur:
+        res["regle_de_trois"] = f"quantités multipliées par {_fmt(round(facteur, 3))} ({pr} -> {pv} personnes)"
     if refuses:
         res["refuses"] = refuses
     if not ajoutes:
@@ -372,21 +524,31 @@ _ENVOI = re.compile(r"\b(envoie|envoies|envoyer)\b")
 _PAS_ENVOI = re.compile(r"n'envoie|ne l'envoie|sans l'envoyer|pas l'envoyer|ne pas envoyer")
 
 
+def demande_liste(question):
+    q = norm(question)
+    return "liste" in q or "courses" in q
+
+
 def consigne_de_relance(question, texte, ex):
-    """Le modèle répond en texte : la tâche demandée est-elle faite ? Sinon, la consigne à lui renvoyer.
+    """Le modèle répond en texte : la tâche demandée est-elle faite ? Sinon, (motif, consigne à lui renvoyer).
 
     Le code ne fait rien à la place du modèle : il lui rappelle l'étape qui manque. L'envoi reste soumis
     à la confirmation de l'utilisateur, relance ou pas."""
     q, t = norm(question), norm(texte)
-    demande_liste = "liste" in q or "courses" in q
-    if demande_liste and not ex.liste_modifiee:
-        return ("Tu n'as encore rien ajouté à la liste de courses. Appelle maintenant ajouter_a_la_liste avec les "
-                "ingrédients de la recette (quantités adaptées, sans ce que l'utilisateur a déjà ou ne peut pas manger). "
-                "Ne réponds pas en texte.")
-    if demande_liste and _ENVOI.search(q) and not _PAS_ENVOI.search(q) and not ex.envoi_prepare:
-        return "L'utilisateur a demandé l'envoi : appelle maintenant envoyer_liste (le système lui demandera de confirmer)."
+    regles = []
+    if ex.demande_liste and not ex.liste_modifiee:
+        regles.append(("liste_vide", "Tu n'as encore rien ajouté à la liste de courses. Appelle maintenant "
+                       "ajouter_a_la_liste avec les ingrédients de la recette (quantités recopiées, personnes_recette "
+                       "et personnes, sans ce que l'utilisateur a déjà). Ne réponds pas en texte."))
+    if ex.demande_liste and ex.liste_modifiee and _ENVOI.search(q) and not _PAS_ENVOI.search(q) and not ex.envoi_prepare:
+        regles.append(("envoi", "L'utilisateur a demandé l'envoi : appelle maintenant envoyer_liste "
+                       "(le système lui demandera de confirmer)."))
     if _ANNONCE.search(t) and "?" not in texte:
-        return "Ne décris pas ce que tu vas faire : appelle directement l'outil nécessaire, ou donne ta réponse finale."
+        regles.append(("annonce", "Ne décris pas ce que tu vas faire : appelle directement l'outil nécessaire, "
+                       "ou donne ta réponse finale."))
+    for motif, consigne in regles:
+        if ex.relances_par_motif.get(motif, 0) < MAX_PAR_MOTIF:
+            return motif, consigne
     return None
 
 
@@ -394,6 +556,8 @@ def consigne_de_relance(question, texte, ex):
 
 def _system(st):
     texte = SYSTEM
+    if st["allergies"]:
+        texte += "\n\nAllergies déclarées par l'utilisateur : " + ", ".join(st["allergies"])
     if st["shopping_list"]:
         texte += "\n\nListe de courses actuelle : " + " ; ".join(st["shopping_list"])
         if st["sent"]:
@@ -434,6 +598,7 @@ def _sortie(ex, question, texte, t0, seed, arret):
         "arret": arret,                    # reponse | max_steps | max_tokens | confirmation
         "seed": seed,
         "relances": ex.relances,
+        "relances_par_motif": ex.relances_par_motif,
         "contexte_max": ex.contexte_max,   # plus gros prompt envoyé : à comparer à la fenêtre de contexte d'Ollama
     }
 
@@ -468,6 +633,11 @@ def answer(question: str, state: dict = None) -> dict:
         if decision == "non" and len(re.findall(r"[a-z']+", norm(question))) <= 3:
             return _sortie(ex, question, "D'accord, je n'envoie pas la liste. Tu peux encore la modifier.",
                            t0, seed, "confirmation")
+
+    for a in allergies_declarees(question):  # gardées dans l'état pour les tours suivants
+        if a not in st["allergies"]:
+            st["allergies"].append(a)
+    ex.demande_liste = demande_liste(question)
 
     messages = [{"role": "system", "content": _system(st)}, *st["historique"], {"role": "user", "content": question}]
 
@@ -504,11 +674,13 @@ def answer(question: str, state: dict = None) -> dict:
                 relance = True
                 pas["remarque"] = "réponse vide, relance"
                 continue
-            consigne = None
+            relance_ = None
             if RELANCE and ex.relances < MAX_RELANCES and etape < MAX_STEPS:
-                consigne = consigne_de_relance(question, texte, ex)
-            if consigne:  # le modèle a annoncé au lieu d'agir : on lui rappelle l'étape qui manque
+                relance_ = consigne_de_relance(question, texte, ex)
+            if relance_:  # la tâche n'est pas faite : on rappelle au modèle l'étape qui manque
+                motif, consigne = relance_
                 ex.relances += 1
+                ex.relances_par_motif[motif] = ex.relances_par_motif.get(motif, 0) + 1
                 pas["relance"] = consigne
                 messages += [{"role": "assistant", "content": texte}, {"role": "user", "content": consigne}]
                 continue
@@ -527,6 +699,9 @@ def answer(question: str, state: dict = None) -> dict:
             messages.append({"role": "tool", "tool_call_id": appel.get("id") or f"appel_{etape}_{i}",
                              "content": json.dumps(res, ensure_ascii=False)})
 
+    if arret == "reponse" and not texte:  # deux réponses vides : on répond à partir de l'état
+        texte = ("Ta liste de courses : " + " ; ".join(st["shopping_list"])) if st["shopping_list"] else \
+            "Je n'ai pas réussi à répondre, peux-tu reformuler ?"
     if arret == "max_steps":
         texte = f"Je n'ai pas pu terminer la demande en {MAX_STEPS} étapes."
     elif arret == "max_tokens":
