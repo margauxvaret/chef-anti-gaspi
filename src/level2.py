@@ -17,8 +17,11 @@ l'état renvoyé au tour précédent : c'est ce qui permet de répondre « oui �
 Réglages (variables d'environnement) :
     LEVEL2_MAX_STEPS           appels au modèle par question (défaut 8)
     LEVEL2_MAX_TOKENS          tokens cumulés, entrée + sortie, par question (défaut 20000)
-    LEVEL2_TEMPERATURE         défaut 0.7, avec une seed tirée au hasard (notée dans la sortie) : sans cela,
-                               les 3 essais de pass^3 seraient identiques
+    LEVEL2_TEMPERATURE         défaut 0.3, avec une seed tirée au hasard (notée dans la sortie) : à 0, les 3 essais
+                               de pass^3 seraient identiques ; à 0.7, qwen2.5:3b divaguait (run du 16/11)
+    LEVEL2_RELANCE             1 (défaut) = si le modèle répond en texte alors que la tâche n'est pas faite (liste
+                               demandée mais vide, envoi demandé mais pas préparé, « je vais… »), le code le relance,
+                               2 fois au plus. 0 = désactivé (pour mesurer l'effet des relances)
     LEVEL2_TOP_K               extraits renvoyés par recherche (défaut 3 ; le contexte d'Ollama est limité)
     LEVEL2_RECHERCHE_INITIALE  1 = le code lance la recherche sur la question avant le premier appel au modèle
                                (variante à mesurer contre 0, le défaut, où le modèle décide seul)
@@ -43,9 +46,11 @@ ENVOIS = ROOT / "runs" / "envois.jsonl"  # l'envoi est simulé : chaque liste en
 
 MAX_STEPS = int(os.getenv("LEVEL2_MAX_STEPS", "8"))
 MAX_TOKENS = int(os.getenv("LEVEL2_MAX_TOKENS", "20000"))
-TEMPERATURE = float(os.getenv("LEVEL2_TEMPERATURE", "0.7"))
+TEMPERATURE = float(os.getenv("LEVEL2_TEMPERATURE", "0.3"))
 TOP_K = int(os.getenv("LEVEL2_TOP_K", "3"))
 RECHERCHE_INITIALE = os.getenv("LEVEL2_RECHERCHE_INITIALE", "0") == "1"
+RELANCE = os.getenv("LEVEL2_RELANCE", "1") == "1"
+MAX_RELANCES = 2
 MAX_SORTIE = 1024     # tokens par réponse du modèle : une liste de 20 articles en JSON dépasse 512
 MAX_ARTICLES = 60
 HISTORIQUE = 6        # messages (questions et réponses) gardés d'un tour à l'autre
@@ -66,12 +71,24 @@ def _schema(nom, description, proprietes, requis):
         "type": "object", "properties": proprietes, "required": requis}}}
 
 
+def _outils_de_base():
+    """Schémas de src/tools.py. La description de chercher_produit est resserrée : celle d'origine (« utile pour
+    choisir un produit à ajouter à la liste ») poussait qwen2.5:3b à l'appeler pour chaque ingrédient."""
+    schemas = copy.deepcopy(SCHEMAS_TOOLS)
+    for s in schemas:
+        if s["function"]["name"] == "chercher_produit":
+            s["function"]["description"] = (
+                "Cherche un produit du commerce dans Open Food Facts (marque, quantité, Nutri-Score). Seulement si "
+                "l'utilisateur parle d'un produit du commerce, d'une marque, du Nutri-Score ou d'Open Food Facts.")
+    return schemas
+
+
 SCHEMAS = [
     _schema("rechercher_recettes",
             "Cherche dans le livre de cuisine les extraits utiles : ingrédients, quantités, temps, températures. "
             "Chaque extrait a un numéro [n] à citer.",
             {"requete": {"type": "string", "description": "Plat ou ingrédients recherchés, ex. pipérade"}}, ["requete"]),
-    *SCHEMAS_TOOLS,
+    *_outils_de_base(),
     _schema("ajouter_a_la_liste",
             "Ajoute des articles à la liste de courses (action modifiable). Mettre tous les articles en un seul appel.",
             {"articles": {"type": "array", "items": {"type": "object", "properties": {
@@ -86,14 +103,20 @@ SCHEMAS = [
 ]
 assert {s["function"]["name"] for s in SCHEMAS} == set(EFFETS), "chaque outil doit avoir un effet déclaré"
 
-SYSTEM = f"""Tu es un chef anti-gaspi. Tu réponds en français, de façon concise, et tu utilises les outils.
-Règles :
-1. Question sur une recette (ingrédients, quantités, temps, température) : appelle rechercher_recettes, puis réponds UNIQUEMENT à partir des extraits, en citant chaque information par son numéro, ex. [1]. Si les extraits ne contiennent pas la réponse, réponds exactement : « {ABSTAIN} » N'invente jamais une recette absente des extraits.
-2. Liste de courses : cherche la recette, adapte les quantités au nombre de personnes demandé, retire ce que l'utilisateur a déjà ou ne peut pas manger, puis appelle ajouter_a_la_liste avec tous les articles en un seul appel.
-3. Envoi : si l'utilisateur demande d'envoyer la liste, appelle envoyer_liste. C'est le système qui demande la confirmation à l'utilisateur ; n'écris jamais que la liste est envoyée.
-4. Conversion d'unités : appelle convertir_unites, ne calcule pas de tête.
-5. Demande trop vague : pose une question de précision. Demande sans rapport avec la cuisine : refuse poliment.
-Si un outil renvoie une erreur, corrige ta demande ou explique le problème à l'utilisateur."""
+SYSTEM = f"""Tu es un chef anti-gaspi. Réponds en français, en peu de mots. Agis avec les outils au lieu de décrire ce que tu vas faire.
+
+QUESTION sur une recette : appelle rechercher_recettes, puis réponds avec les extraits en citant [n]. Si aucun extrait ne parle du plat demandé, réponds exactement : « {ABSTAIN} »
+
+LISTE DE COURSES :
+1) rechercher_recettes avec le nom du plat ;
+2) ajouter_a_la_liste en UN appel avec les ingrédients de cette recette : quantités adaptées au nombre de personnes (règle de trois), sans ce que l'utilisateur a déjà ni ce qu'il ne peut pas manger ;
+3) si l'utilisateur demande l'envoi : envoyer_liste. Le système lui demande la confirmation ; n'écris jamais que la liste est envoyée ;
+4) une réponse courte.
+Si le plat demandé n'est dans aucun extrait, n'invente pas ses ingrédients : dis-le, ou suis la solution de repli proposée par l'utilisateur.
+
+Conversion d'unités : convertir_unites. Produit du commerce, marque ou Nutri-Score : chercher_produit.
+Demande trop vague : une question de précision. Demande sans rapport avec la cuisine : refus poli.
+Si un outil renvoie une erreur, corrige ton appel."""
 
 
 # ---------------------------------------------------------------------------------------------- utilitaires
@@ -154,6 +177,9 @@ class _Execution:
         self.steps = []
         self.tokens_in = self.tokens_out = self.contexte_max = 0
         self.deja_vus = set()     # appels déjà exécutés (outil + arguments)
+        self.liste_modifiee = False
+        self.envoi_prepare = False
+        self.relances = 0
 
 
 def _etat(state):
@@ -185,9 +211,10 @@ def _rechercher(args, ex):
             ex.extraits.append(i)
         extraits.append({"n": ex.extraits.index(i) + 1, "recette": level1.short_title(chunks[i]["title"]),
                          "texte": chunks[i]["text"]})
-    return {"ok": True, "extraits": extraits,
-            "consigne": "Cite chaque information par le numéro de son extrait, ex. [1]. "
-                        "Si la réponse n'est pas dans les extraits, dis-le."}
+    recettes = list(dict.fromkeys(e["recette"] for e in extraits))
+    return {"ok": True, "recettes_trouvees": recettes, "extraits": extraits,
+            "suite": "Pour une question : réponds avec ces extraits en citant [n]. Pour une liste de courses : "
+                     "appelle maintenant ajouter_a_la_liste avec les ingrédients de la bonne recette."}
 
 
 def _ajouter(args, st):
@@ -288,11 +315,15 @@ def _executer(nom, args, ex):
         return {"ok": False, "erreur": f"Outil inconnu : {nom!r}. Outils disponibles : {', '.join(EFFETS)}."}
     try:
         if effet == "irreversible":  # règle générale : une action irréversible attend toujours un « oui »
-            return _demander_confirmation(ex.state)
+            res = _demander_confirmation(ex.state)
+            ex.envoi_prepare = ex.envoi_prepare or bool(res.get("ok"))
+            return res
         if nom == "rechercher_recettes":
             return _rechercher(args, ex)
         if nom == "ajouter_a_la_liste":
-            return _ajouter(args, ex.state)
+            res = _ajouter(args, ex.state)
+            ex.liste_modifiee = ex.liste_modifiee or bool(res.get("ok"))
+            return res
         return executer_tool(nom, args)
     except Exception as e:  # filet de sécurité : l'agent ne plante jamais à cause d'un outil
         return {"ok": False, "erreur": f"Erreur dans l'outil {nom} : {type(e).__name__}: {e}"}
@@ -331,6 +362,31 @@ def decision_confirmation(texte):
         return "non"
     if mots[0] in _OUI_DEBUT and all(m in _OUI_RESTE for m in mots):
         return "oui"
+    return None
+
+
+# ---------------------------------------------------------------------------------------------- relances
+
+_ANNONCE = re.compile(r"\b(je vais|nous allons|on va|ajoutons|commencons par)\b")
+_ENVOI = re.compile(r"\b(envoie|envoies|envoyer)\b")
+_PAS_ENVOI = re.compile(r"n'envoie|ne l'envoie|sans l'envoyer|pas l'envoyer|ne pas envoyer")
+
+
+def consigne_de_relance(question, texte, ex):
+    """Le modèle répond en texte : la tâche demandée est-elle faite ? Sinon, la consigne à lui renvoyer.
+
+    Le code ne fait rien à la place du modèle : il lui rappelle l'étape qui manque. L'envoi reste soumis
+    à la confirmation de l'utilisateur, relance ou pas."""
+    q, t = norm(question), norm(texte)
+    demande_liste = "liste" in q or "courses" in q
+    if demande_liste and not ex.liste_modifiee:
+        return ("Tu n'as encore rien ajouté à la liste de courses. Appelle maintenant ajouter_a_la_liste avec les "
+                "ingrédients de la recette (quantités adaptées, sans ce que l'utilisateur a déjà ou ne peut pas manger). "
+                "Ne réponds pas en texte.")
+    if demande_liste and _ENVOI.search(q) and not _PAS_ENVOI.search(q) and not ex.envoi_prepare:
+        return "L'utilisateur a demandé l'envoi : appelle maintenant envoyer_liste (le système lui demandera de confirmer)."
+    if _ANNONCE.search(t) and "?" not in texte:
+        return "Ne décris pas ce que tu vas faire : appelle directement l'outil nécessaire, ou donne ta réponse finale."
     return None
 
 
@@ -377,6 +433,7 @@ def _sortie(ex, question, texte, t0, seed, arret):
         "latency": time.time() - t0,
         "arret": arret,                    # reponse | max_steps | max_tokens | confirmation
         "seed": seed,
+        "relances": ex.relances,
         "contexte_max": ex.contexte_max,   # plus gros prompt envoyé : à comparer à la fenêtre de contexte d'Ollama
     }
 
@@ -446,6 +503,14 @@ def answer(question: str, state: dict = None) -> dict:
             if not texte and not relance:  # réponse vide (déjà observée avec qwen2.5:3b) : on relance une fois
                 relance = True
                 pas["remarque"] = "réponse vide, relance"
+                continue
+            consigne = None
+            if RELANCE and ex.relances < MAX_RELANCES and etape < MAX_STEPS:
+                consigne = consigne_de_relance(question, texte, ex)
+            if consigne:  # le modèle a annoncé au lieu d'agir : on lui rappelle l'étape qui manque
+                ex.relances += 1
+                pas["relance"] = consigne
+                messages += [{"role": "assistant", "content": texte}, {"role": "user", "content": consigne}]
                 continue
             arret = "reponse"
             break

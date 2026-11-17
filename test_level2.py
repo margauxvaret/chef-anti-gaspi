@@ -179,12 +179,49 @@ class Agent(unittest.TestCase):
         m = FauxModele([appel("rechercher_recettes", requete="pipérade")],
                        [appel("rechercher_recettes", requete="pan bagnat thon olives")],
                        "Œufs [1], thon [3].")
-        out = self.lancer(m, "Liste pipérade et pan bagnat")
+        out = self.lancer(m, "Ingrédients de la pipérade et du pan bagnat ?")
         premiers = json.loads(m.recus[1][-1]["content"])["extraits"]
         seconds = json.loads(m.recus[2][-1]["content"])["extraits"]
         nouveaux = [e["n"] for e in seconds if e["n"] > len(premiers)]
         self.assertEqual(nouveaux[0], len(premiers) + 1, "la 2e recherche continue la numérotation")
         self.assertIn("livre-de-cuisine-pan-bagnat", [e for e in out["sources"]] + out["retrieved"])
+
+    # --- relances -------------------------------------------------------------------------------------
+
+    def test_relance_quand_le_modele_annonce_au_lieu_d_agir(self):
+        m = FauxModele([appel("rechercher_recettes", requete="pipérade")],
+                       "Je vais maintenant ajouter les ingrédients à votre liste.",
+                       [appel("ajouter_a_la_liste", articles=PIPERADE)], "C'est fait.")
+        out = self.lancer(m, "Prépare la liste de courses de la pipérade pour 4 personnes.")
+        self.assertEqual(out["relances"], 1)
+        self.assertIn("ajouter_a_la_liste", m.recus[2][-1]["content"])  # la consigne renvoyée au modèle
+        self.assertTrue(out["state"]["shopping_list"])
+        self.assertEqual(out["answer"], "C'est fait.")
+
+    def test_relance_vers_l_envoi_seulement_si_demande(self):
+        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], "Voilà.", [appel("envoyer_liste")], "Confirme.")
+        out = self.lancer(m, "Prépare la liste de la pipérade et envoie-la.")
+        self.assertTrue(out["state"]["pending_confirmation"])
+        self.assertFalse(out["state"]["sent"])
+        m = FauxModele([appel("ajouter_a_la_liste", articles=PIPERADE)], "Voilà.")
+        out = self.lancer(m, "Prépare la liste de la pipérade mais ne l'envoie pas.")
+        self.assertEqual(out["relances"], 0)
+        self.assertFalse(out["state"]["pending_confirmation"])
+
+    def test_relances_bornees(self):
+        m = FauxModele("Je vais le faire.", "Je vais le faire.", "Je vais le faire.", "Je vais le faire.")
+        out = self.lancer(m, "Prépare ma liste de courses.")
+        self.assertEqual(out["relances"], level2.MAX_RELANCES)
+        self.assertEqual(len(m.recus), 1 + level2.MAX_RELANCES)
+
+    def test_pas_de_relance_pour_une_question_de_precision(self):
+        m = FauxModele("Pour combien de personnes ?")
+        out = self.lancer(m, "Fais-moi quelque chose de rapide.")
+        self.assertEqual(out["relances"], 0)
+
+    def test_description_de_chercher_produit_resserree(self):
+        desc = next(s["function"]["description"] for s in level2.SCHEMAS if s["function"]["name"] == "chercher_produit")
+        self.assertIn("Seulement si", desc)
 
     def test_sortie_compatible_avec_eval(self):
         out = self.lancer(FauxModele("Bonjour."), "Bonjour")
