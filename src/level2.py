@@ -343,6 +343,7 @@ class _Execution:
         self.demande_liste = False
         self.question = ""
         self.produits_cherches = []   # noms passés à chercher_produit (exception à la redirection vers la recette)
+        self.apports = {}             # doc_id -> articles ajoutés par ajouter_recette pendant cette question
         self.relances = 0
         self.relances_par_motif = {}
 
@@ -449,7 +450,7 @@ def _ajouter(args, st):
         st["pending_confirmation"] = False  # la liste change : la confirmation demandée ne vaut plus
         remarques.append("La liste a changé : l'envoi en attente est annulé, il faudra le redemander.")
 
-    ajoutes, refuses = [], []
+    ajoutes, refuses, apports = [], [], []
     for a in articles:
         if isinstance(a, str):
             a = {"nom": a}
@@ -488,9 +489,10 @@ def _ajouter(args, st):
         else:
             st["articles"].append({"nom": nom, "quantite": q, "unite": unite})
             ajoutes.append(_libelle(st["articles"][-1]))
+        apports.append({"nom": nom, "quantite": q, "unite": unite})
 
     st["shopping_list"] = [_libelle(a) for a in st["articles"]]
-    res = {"ok": bool(ajoutes), "ajoutes": ajoutes, "liste": st["shopping_list"]}
+    res = {"ok": bool(ajoutes), "ajoutes": ajoutes, "liste": st["shopping_list"], "_apports": apports}
     if facteur:
         res["regle_de_trois"] = f"quantités multipliées par {_fmt(round(facteur, 3))} ({pr} -> {pv} personnes)"
     if refuses:
@@ -528,6 +530,9 @@ def _ajouter_recette(args, ex):
     # run du 17/11 (multi-02, multi-03) : le modèle retirait des ingrédients que l'utilisateur n'avait pas cités
     seulement, seulement_ignores = _ancrer(_textes(args.get("seulement")), ex)
     sauf, sauf_ignores = _ancrer(_textes(args.get("sauf")), ex)
+    if seulement_ignores and not seulement:  # run du 17/11 (multi-09) : toute la recette était ajoutée une 2e fois
+        return {"ok": False, "erreur": f"seulement = {', '.join(seulement_ignores)} : l'utilisateur n'a pas demandé ces "
+                "ingrédients, rien n'a été ajouté. Pour toute la recette, appelle ajouter_recette sans seulement."}
     if seulement:
         articles = [a for a in articles if any(R.contient(a["nom"], t) for t in seulement)]
         if not articles:
@@ -549,7 +554,21 @@ def _ajouter_recette(args, ex):
         res = {"ok": True, "ajoutes": [], "liste": ex.state["shopping_list"],
                "remarque": "Rien à ajouter : l'utilisateur a déjà tous les ingrédients."}
     else:
+        # Même recette ajoutée deux fois dans la même demande : le dernier appel remplace le précédent au lieu de
+        # s'y additionner (run du 17/11, multi-09 et multi-10 : 16 tomates, 20 œufs).
+        avant = copy.deepcopy(ex.state["articles"])
+        remplace = doc in ex.apports
+        if remplace:
+            _retirer_apports(ex.state, ex.apports.pop(doc))
         res = _ajouter(demande, ex.state)
+        if res.get("ok"):
+            ex.apports[doc] = res.get("_apports", [])
+            if remplace:
+                remarques.append(f"« {titre} » avait déjà été ajoutée à cette demande : ses quantités sont remplacées, "
+                                 "pas additionnées.")
+        else:
+            ex.state["articles"] = avant
+            ex.state["shopping_list"] = [_libelle(a) for a in avant]
     res.update(recette=titre, personnes_recette=personnes_recette)
     if retires:
         res["retires"] = retires
@@ -559,6 +578,22 @@ def _ajouter_recette(args, ex):
     if remarques:
         res["remarques"] = res.get("remarques", []) + remarques
     return res
+
+
+def _retirer_apports(st, apports):
+    """Annule ce qu'un appel précédent d'ajouter_recette avait ajouté (quantités retranchées, lignes vidées retirées)."""
+    for a in apports:
+        x = next((x for x in st["articles"]
+                  if _cle(x["nom"]) == _cle(a["nom"]) and norm(x.get("unite")) == norm(a.get("unite"))), None)
+        if x is None:
+            continue
+        if a["quantite"] is not None and x["quantite"] is not None:
+            x["quantite"] -= a["quantite"]
+            if x["quantite"] <= 1e-9:
+                st["articles"].remove(x)
+        elif x["quantite"] is None:
+            st["articles"].remove(x)
+    st["shopping_list"] = [_libelle(a) for a in st["articles"]]
 
 
 def _redirection_vers_recette(args, ex):
@@ -576,7 +611,12 @@ def _redirection_vers_recette(args, ex):
     if not citees or not isinstance(articles, list):
         return None
     noms = [str(a.get("nom") if isinstance(a, dict) else a) for a in articles]
-    noms = [n for n in noms if not any(R.contient(n, p) or R.contient(p, n) for p in ex.produits_cherches)]
+    # Exception : un produit que L'UTILISATEUR a demandé de chercher (multi-05). Pas un produit que le modèle a
+    # cherché de lui-même (run du 17/11, multi-04 : « vin blanc » cherché puis « 250 ml » inventés).
+    demande_produit = any(k in norm(t) for t in _textes_utilisateur(ex)
+                          for k in ("open food facts", "openfoodfacts", "nutri-score", "nutriscore", "marque", "produit"))
+    if demande_produit:
+        noms = [n for n in noms if not any(R.contient(n, p) or R.contient(p, n) for p in ex.produits_cherches)]
     for doc in citees:
         ingredients = [i["nom"] for i in R.lire_ingredients(R.recettes()[doc]["texte"])[1]]
         venus = [n for n in noms if any(R.contient(n, i) or R.contient(i, n) for i in ingredients)]
@@ -637,6 +677,7 @@ def _executer(nom, args, ex):
                 ex.produits_cherches.append(str(args["nom"]))
     except Exception as e:  # filet de sécurité : l'agent ne plante jamais à cause d'un outil
         res = {"ok": False, "erreur": f"Erreur dans l'outil {nom} : {type(e).__name__}: {e}"}
+    res.pop("_apports", None)  # détail interne de _ajouter, pas pour le modèle
     # On ne mémorise que les appels réussis : un appel qui a échoué (liste encore vide, etc.) peut être refait.
     # L'envoi n'est jamais mémorisé : son résultat dépend de l'état (run du 17/11, multi-09).
     if res.get("ok") and effet != "irreversible":
@@ -684,6 +725,7 @@ def decision_confirmation(texte):
 
 _ANNONCE = re.compile(r"\b(je vais|nous allons|on va|ajoutons|commencons par)\b")
 _ENVOI = re.compile(r"\b(envoie|envoies|envoyer)\b")
+_ENVOI_AFFIRME = re.compile(r"\b(a ete|ont ete|est|sont|j'ai|je l'ai|c'est) (bien )?envoye")
 _PAS_ENVOI = re.compile(r"n'envoie|ne l'envoie|sans l'envoyer|pas l'envoyer|ne pas envoyer")
 
 
@@ -863,6 +905,8 @@ def answer(question: str, state: dict = None) -> dict:
             messages.append({"role": "tool", "tool_call_id": appel.get("id") or f"appel_{etape}_{i}",
                              "content": json.dumps(res, ensure_ascii=False)})
 
+    if arret == "reponse" and not st["sent"] and _ENVOI_AFFIRME.search(norm(texte)):
+        texte = ""  # le texte affirme un envoi qui n'a pas eu lieu (run du 17/11, multi-02) : on répond par l'état
     if arret == "reponse" and ex.liste_modifiee and ABSTAIN.rstrip(".") in texte:
         texte = ""  # « je ne trouve pas » alors que la liste a été remplie : la réponse contredit l'état
     if arret == "reponse" and not texte:  # réponse vide : on répond à partir de l'état

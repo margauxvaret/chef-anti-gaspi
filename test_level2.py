@@ -431,6 +431,52 @@ class Agent(unittest.TestCase):
                                  "pour le porc au lait de coco.")
         self.assertEqual(out["state"]["shopping_list"], ["lait de coco en boîte : 1"])
 
+    def test_meme_recette_deux_fois_remplace_au_lieu_d_additionner(self):
+        """Run du 17/11 (multi-10) : pipérade ajoutée deux fois -> 20 œufs."""
+        m = FauxModele([appel("ajouter_recette", recette="pipérade", personnes=4)],
+                       [appel("ajouter_recette", recette="pipérade", personnes=2)], "Fait.")
+        out = self.lancer(m, "Liste de la pipérade pour 2 personnes.")
+        self.assertIn("œufs : 5", out["state"]["shopping_list"])
+        self.assertIn("remplacées", " ".join(out["steps"][1]["outils"][0]["resultat"]["remarques"]))
+
+    def test_remplacer_une_recette_garde_les_autres(self):
+        m = FauxModele([appel("ajouter_recette", recette="pipérade"), appel("ajouter_recette", recette="pan bagnat")],
+                       [appel("ajouter_recette", recette="pipérade", personnes=2)], "Fait.")
+        out = self.lancer(m, "Liste de la pipérade pour 2 personnes et du pan bagnat.")
+        liste = out["state"]["shopping_list"]
+        self.assertIn("poivron vert : 2", liste)  # 1 (pipérade pour 2, arrondi) + 1 (pan bagnat)
+        self.assertIn("thon : 250 g", liste)
+
+    def test_seulement_entierement_ignore_n_ajoute_rien(self):
+        """Run du 17/11 (multi-09) : seulement=[huile, ail] non demandés -> toute l'escalivada ajoutée une 2e fois."""
+        m = FauxModele([appel("ajouter_recette", recette="Escalivada", personnes=4)],
+                       [appel("ajouter_recette", recette="Escalivada", seulement=["Huile d'olive", "ail"])], "Fait.")
+        out = self.lancer(m, "Prépare la liste de courses de l'escalivada pour 4 personnes.")
+        self.assertFalse(out["steps"][1]["outils"][0]["resultat"]["ok"])
+        self.assertIn("tomates : 8", out["state"]["shopping_list"])
+
+    def test_produit_cherche_par_le_modele_seul_reste_redirige(self):
+        """Run du 17/11 (multi-04) : le modèle cherche « vin blanc » de lui-même puis invente 250 ml."""
+        reel = level2.executer_tool
+        faux = lambda nom, args: {"ok": True, "produits": []} if nom == "chercher_produit" else reel(nom, args)  # noqa: E731
+        m = FauxModele([appel("chercher_produit", nom="vin blanc")],
+                       [appel("ajouter_a_la_liste", articles=[{"nom": "vin blanc", "quantite": 25, "unite": "cl"}])],
+                       [appel("ajouter_recette", recette="Chili con carne", seulement=["vin blanc"])], "Fait.")
+        with mock.patch.object(level2, "executer_tool", faux):
+            out = self.lancer(m, "Ajoute à ma liste de courses le vin blanc du chili con carne, avec la quantité "
+                                 "exprimée en millilitres.")
+        self.assertIn("ajouter_recette", out["steps"][1]["outils"][0]["resultat"]["erreur"])
+        self.assertEqual(out["state"]["shopping_list"], ["vin blanc sec : 200 ml"])
+
+    def test_la_reponse_ne_pretend_pas_que_la_liste_est_envoyee(self):
+        """Run du 17/11 (multi-02) : « La liste de courses a été envoyée » alors qu'elle attend le « oui »."""
+        m = FauxModele([appel("ajouter_recette", recette="pipérade")], [appel("envoyer_liste")],
+                       "La liste de courses a été envoyée.")
+        out = self.lancer(m, "Prépare la liste de la pipérade puis envoie-la.")
+        self.assertNotIn("a été envoyée", out["answer"])
+        self.assertIn("réponds « oui »", out["answer"])
+        self.assertTrue(out["state"]["pending_confirmation"])
+
     def test_un_envoi_rate_peut_etre_refait(self):
         """Run du 17/11 (multi-09) : envoyer_liste appelé quand la liste était vide, puis refusé comme « identique »."""
         m = FauxModele([appel("envoyer_liste"), appel("ajouter_recette", recette="escalivada")],
