@@ -7,7 +7,9 @@ Outils, classés par effet (dictionnaire EFFETS) :
     rechercher_recettes   lecture        extraits du livre de cuisine (RAG du niveau 1), cités [n]
     convertir_unites      lecture        src/tools.py
     chercher_produit      lecture        src/tools.py (Open Food Facts)
-    ajouter_a_la_liste    écriture       modifiable, la liste vit dans l'état
+    ajouter_recette       écriture       le CODE lit les ingrédients d'une recette du livre (src/recettes.py),
+                                         retire ce que l'utilisateur a déjà, fait la règle de trois
+    ajouter_a_la_liste    écriture       articles isolés (ex. un produit trouvé dans Open Food Facts)
     envoyer_liste         irréversible   jamais exécuté par le modèle : met l'envoi en attente de confirmation
 
 Contrat commun : answer(question) -> dict (voir src/level0.py). En plus, answer(question, state) reprend
@@ -25,7 +27,7 @@ Réglages (variables d'environnement) :
 
 Règles métier tenues par le code (et non par le prompt), voir _ajouter :
     - quantités positives ; unités métriques ramenées en g et ml ; doublons regroupés ;
-    - règle de trois faite par le code (personnes_recette -> personnes), pas par le modèle ;
+    - ingrédients lus par le code dans le livre, règle de trois faite par le code, pas par le modèle ;
     - allergies déclarées (« je suis allergique aux arachides ») : les articles concernés sont refusés ;
     - pas d'envoi d'une liste vide ; liste modifiée = confirmation annulée ; appel identique refusé.
     LEVEL2_TOP_K               extraits renvoyés par recherche (défaut 3 ; le contexte d'Ollama est limité)
@@ -45,6 +47,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from src import level1, llm
+from src import recettes as R
 from src.tools import SCHEMAS as SCHEMAS_TOOLS
 from src.tools import executer as executer_tool
 
@@ -70,6 +73,7 @@ EFFETS = {
     "rechercher_recettes": "lecture",
     "convertir_unites": "lecture",
     "chercher_produit": "lecture",
+    "ajouter_recette": "ecriture",
     "ajouter_a_la_liste": "ecriture",
     "envoyer_liste": "irreversible",
 }
@@ -98,10 +102,19 @@ SCHEMAS = [
             "Chaque extrait a un numéro [n] à citer.",
             {"requete": {"type": "string", "description": "Plat ou ingrédients recherchés, ex. pipérade"}}, ["requete"]),
     *_outils_de_base(),
+    _schema("ajouter_recette",
+            "Ajoute à la liste de courses les ingrédients d'une recette du livre. Le système lit lui-même les "
+            "ingrédients et fait la règle de trois : ne recopie pas les ingrédients.",
+            {"recette": {"type": "string", "description": "nom du plat, ex. pipérade"},
+             "personnes": {"type": "integer", "description": "nombre de personnes demandé par l'utilisateur"},
+             "sauf": {"type": "array", "items": {"type": "string"},
+                      "description": "ce que l'utilisateur a déjà ou ne veut pas, ex. [\"oignons\", \"ail\"]"},
+             "seulement": {"type": "array", "items": {"type": "string"},
+                           "description": "si l'utilisateur ne veut que certains ingrédients, ex. [\"vin blanc\"]"}},
+            ["recette"]),
     _schema("ajouter_a_la_liste",
-            "Ajoute des articles à la liste de courses (action modifiable). Mettre tous les articles en un seul appel. "
-            "Recopier les quantités de la recette sans les modifier : le système fait la règle de trois à partir de "
-            "personnes_recette et personnes.",
+            "Ajoute des articles isolés à la liste de courses (ex. un produit trouvé dans Open Food Facts). "
+            "Pour les ingrédients d'une recette du livre, utiliser ajouter_recette.",
             {"articles": {"type": "array", "items": {"type": "object", "properties": {
                 "nom": {"type": "string", "description": "ex. oignons"},
                 "quantite": {"type": "number", "description": "quantité écrite dans la recette, ex. 3 (facultatif)"},
@@ -121,11 +134,11 @@ SYSTEM = f"""Tu es un chef anti-gaspi. Réponds en français, en peu de mots. Ag
 QUESTION sur une recette : appelle rechercher_recettes, puis réponds avec les extraits en citant [n]. Si aucun extrait ne parle du plat demandé, réponds exactement : « {ABSTAIN} »
 
 LISTE DE COURSES :
-1) rechercher_recettes avec le nom du plat ;
-2) ajouter_a_la_liste en UN appel avec les ingrédients de la section Ingrédients de cette recette (pas les accompagnements ni les boissons suggérés) : recopie les quantités sans les changer, donne personnes_recette et personnes (le système fait la règle de trois), et retire ce que l'utilisateur a déjà ;
-3) si l'utilisateur demande l'envoi : envoyer_liste. Le système lui demande la confirmation ; n'écris jamais que la liste est envoyée ;
-4) une réponse courte.
-Si le plat demandé n'est dans aucun extrait, n'invente pas ses ingrédients : dis-le, ou suis la solution de repli proposée par l'utilisateur.
+1) ajouter_recette avec recette = le nom du plat, personnes = le nombre demandé, sauf = ce que l'utilisateur a déjà ou ne veut pas, seulement = les ingrédients voulus s'il n'en veut que certains. Le système lit les ingrédients dans le livre et fait les calculs : ne recopie pas les ingrédients toi-même. Les allergies déclarées sont appliquées par le système.
+2) Si la recette n'est pas dans le livre, n'invente pas ses ingrédients : applique la solution de repli de l'utilisateur s'il en a donné une, sinon dis-le.
+3) Si l'utilisateur demande l'envoi : envoyer_liste. Le système lui demande la confirmation ; n'écris jamais que la liste est envoyée.
+4) Une réponse courte qui résume la liste.
+Pour un produit isolé (ex. un lait de coco trouvé dans Open Food Facts) : ajouter_a_la_liste.
 
 Conversion d'unités : convertir_unites. Produit du commerce, marque ou Nutri-Score : chercher_produit.
 Demande trop vague : une question de précision. Demande sans rapport avec la cuisine : refus poli.
@@ -166,7 +179,7 @@ def _cle(nom):
 # Unités métriques ramenées à g et ml : « 20 cl » et « 100 ml » de vin blanc se regroupent en une ligne.
 _VOLUMES = {"ml": 1, "millilitre": 1, "cl": 10, "centilitre": 10, "dl": 100, "l": 1000, "litre": 1000}
 _MASSES = {"g": 1, "gr": 1, "gramme": 1, "kg": 1000, "kilo": 1000, "kilogramme": 1000, "mg": 0.001}
-_SANS_UNITE = {"unite", "piece", "u", "pc", "pcs", "nombre"}
+_SANS_UNITE = {"unite", "piece", "u", "pc", "pcs", "nombre", "un", "une"}
 
 
 def _normaliser_unite(q, unite):
@@ -233,6 +246,40 @@ def _allergene(nom, allergies):
         if any(f" {_cle(m)} " in n for m in ALLERGENES.get(a, [a])):
             return a
     return None
+
+
+# « J'ai déjà la viande et les épices » : un mot générique couvre plusieurs ingrédients.
+CATEGORIES = {
+    "viande": ["viande", "boeuf", "veau", "porc", "agneau", "mouton", "poulet", "dinde", "canard", "lapin", "paleron",
+               "basse cote", "steak", "jambon", "lardon", "saucisse", "chorizo", "bacon", "gigot", "collier"],
+    "epice": ["epice", "cumin", "paprika", "origan", "curry", "curcuma", "cannelle", "muscade", "gingembre", "piment",
+              "poivre", "safran", "cardamome", "ras el hanout", "chili", "cayenne", "girofle"],
+    "herbe": ["herbe", "persil", "basilic", "coriandre", "ciboulette", "thym", "laurier", "romarin", "menthe", "aneth",
+              "estragon", "sauge"],
+    "poisson": ALLERGENES["poisson"],
+}
+
+
+def _developper(terme):
+    """« les épices » -> les ingrédients de la catégorie ; sinon le terme lui-même."""
+    sans_article = norm(terme).strip()
+    while True:  # « de la farine » -> « farine »
+        court = re.sub(r"^(?:(?:les|le|la|des|du|de)\s+|(?:l'|d')\s*)", "", sans_article)
+        if court == sans_article:
+            break
+        sans_article = court
+    return CATEGORIES.get(R.cle(sans_article), [sans_article])
+
+
+def _textes(valeur):
+    """Liste de textes, que le modèle envoie un tableau ou « oignons, ail et persil »."""
+    if valeur in (None, ""):
+        return []
+    if isinstance(valeur, str):
+        valeur = re.split(r",|\bet\b", valeur)
+    if not isinstance(valeur, list):
+        valeur = [valeur]
+    return [str(v).strip() for v in valeur if str(v).strip()]
 
 
 _MOTS_VIDES = {"pour", "personne", "personnes", "recette", "recettes", "avec", "dans", "sans", "liste", "course",
@@ -342,11 +389,11 @@ def _recette_complete(requete, ranked, chunks, ex):
            "autres_recettes_proches": [level1.short_title(next(c["title"] for c in chunks if c["doc_id"] == d))
                                        for d in docs[1:4]]}
     if not titre_correspond(requete, titre):
-        res["attention"] = (f"Aucune recette du livre ne s'appelle « {requete} ». « {titre} » est seulement la plus "
-                            "proche : si l'utilisateur voulait précisément ce plat, il n'est pas dans le livre.")
-    res["suite"] = ("Appelle maintenant ajouter_a_la_liste avec les ingrédients de cette recette (quantités "
-                    "recopiées, personnes_recette et personnes), ou rechercher_recettes avec le nom exact d'une "
-                    "autre recette si ce n'est pas la bonne.")
+        res["attention"] = (f"Aucune recette du livre ne s'appelle « {requete} ». Ne prends pas « {titre} » à la "
+                            "place : applique la solution de repli de l'utilisateur s'il en a donné une, sinon "
+                            "dis-lui que ce plat n'est pas dans le livre.")
+    res["suite"] = (f"Pour la liste de courses, appelle maintenant ajouter_recette(recette=\"{titre}\", personnes, "
+                    "sauf) : le système lit les ingrédients.")
     return res
 
 
@@ -434,12 +481,62 @@ def _ajouter(args, st):
     return res
 
 
+def _ajouter_recette(args, ex):
+    nom = str(args.get("recette") or "").strip()
+    doc = R.trouver_recette(nom)
+    if not doc:
+        ranked, _ = level1.retrieve(nom) if nom else ([], None)
+        proches = [R.recettes()[d]["titre"] for d in level1.doc_ranking(ranked)[:3] if d in R.recettes()]
+        return {"ok": False, "erreur": f"Pas de recette « {nom} » dans le livre (recettes proches : "
+                f"{', '.join(proches) or 'aucune'}). N'invente pas ses ingrédients : applique la solution de repli "
+                "de l'utilisateur s'il en a donné une, sinon dis-lui que ce plat n'est pas dans le livre."}
+    titre = R.recettes()[doc]["titre"]
+    personnes_recette, articles = R.lire_ingredients(R.recettes()[doc]["texte"])
+    if len(articles) < 2:
+        return {"ok": False, "erreur": f"Les ingrédients de « {titre} » ne sont pas lisibles automatiquement : "
+                                       "utilise rechercher_recettes puis ajouter_a_la_liste."}
+    tous = [a["nom"] for a in articles]
+    seulement = _textes(args.get("seulement"))
+    if seulement:
+        articles = [a for a in articles if any(R.contient(a["nom"], t) for t in seulement)]
+        if not articles:
+            return {"ok": False, "erreur": f"Aucun ingrédient « {', '.join(seulement)} » dans « {titre} ». "
+                                           f"Ingrédients : {', '.join(tous)}."}
+    retires = []
+    termes = [m for t in _textes(args.get("sauf")) for m in _developper(t)]
+    if termes:
+        retires = [a["nom"] for a in articles if any(R.contient(a["nom"], m) for m in termes)]
+        articles = [a for a in articles if a["nom"] not in retires]
+    remarques = []
+    demande = {"articles": articles}
+    if args.get("personnes") not in (None, ""):
+        if personnes_recette:
+            demande.update(personnes_recette=personnes_recette, personnes=args["personnes"])
+        else:
+            remarques.append("La recette n'indique pas pour combien de personnes : quantités de la recette, non adaptées.")
+    if not articles:
+        res = {"ok": True, "ajoutes": [], "liste": ex.state["shopping_list"],
+               "remarque": "Rien à ajouter : l'utilisateur a déjà tous les ingrédients."}
+    else:
+        res = _ajouter(demande, ex.state)
+    res.update(recette=titre, personnes_recette=personnes_recette)
+    if retires:
+        res["retires"] = retires
+    if remarques:
+        res["remarques"] = res.get("remarques", []) + remarques
+    return res
+
+
 def _demander_confirmation(st):
     """Ce que reçoit le modèle quand il appelle envoyer_liste : rien n'est envoyé."""
     if not st["articles"]:
         return {"ok": False, "erreur": "La liste de courses est vide : il n'y a rien à envoyer."}
     if st["sent"]:
         return {"ok": False, "erreur": "Cette liste a déjà été envoyée."}
+    if st["pending_confirmation"]:
+        return {"ok": True, "statut": "deja_en_attente",
+                "message": "L'envoi attend déjà la confirmation de l'utilisateur : ne rappelle pas envoyer_liste, "
+                           "termine ta réponse."}
     st["pending_confirmation"] = True
     return {"ok": True, "statut": "en_attente_de_confirmation", "liste": st["shopping_list"],
             "message": "Rien n'est envoyé pour l'instant : l'utilisateur doit répondre « oui » pour confirmer. "
@@ -461,7 +558,6 @@ def _executer(nom, args, ex):
     cle = (nom, json.dumps(args, sort_keys=True, ensure_ascii=False))
     if cle in ex.deja_vus:
         return {"ok": False, "erreur": "Appel identique déjà fait : utilise le résultat précédent au lieu de le répéter."}
-    ex.deja_vus.add(cle)
     effet = EFFETS.get(nom)
     if effet is None:
         return {"ok": False, "erreur": f"Outil inconnu : {nom!r}. Outils disponibles : {', '.join(EFFETS)}."}
@@ -469,16 +565,20 @@ def _executer(nom, args, ex):
         if effet == "irreversible":  # règle générale : une action irréversible attend toujours un « oui »
             res = _demander_confirmation(ex.state)
             ex.envoi_prepare = ex.envoi_prepare or bool(res.get("ok"))
-            return res
-        if nom == "rechercher_recettes":
-            return _rechercher(args, ex)
-        if nom == "ajouter_a_la_liste":
-            res = _ajouter(args, ex.state)
+        elif nom == "rechercher_recettes":
+            res = _rechercher(args, ex)
+        elif nom in ("ajouter_a_la_liste", "ajouter_recette"):
+            res = _ajouter(args, ex.state) if nom == "ajouter_a_la_liste" else _ajouter_recette(args, ex)
             ex.liste_modifiee = ex.liste_modifiee or bool(res.get("ok"))
-            return res
-        return executer_tool(nom, args)
+        else:
+            res = executer_tool(nom, args)
     except Exception as e:  # filet de sécurité : l'agent ne plante jamais à cause d'un outil
-        return {"ok": False, "erreur": f"Erreur dans l'outil {nom} : {type(e).__name__}: {e}"}
+        res = {"ok": False, "erreur": f"Erreur dans l'outil {nom} : {type(e).__name__}: {e}"}
+    # On ne mémorise que les appels réussis : un appel qui a échoué (liste encore vide, etc.) peut être refait.
+    # L'envoi n'est jamais mémorisé : son résultat dépend de l'état (run du 17/11, multi-09).
+    if res.get("ok") and effet != "irreversible":
+        ex.deja_vus.add(cle)
+    return res
 
 
 def _lire_arguments(brut):
@@ -538,8 +638,8 @@ def consigne_de_relance(question, texte, ex):
     regles = []
     if ex.demande_liste and not ex.liste_modifiee:
         regles.append(("liste_vide", "Tu n'as encore rien ajouté à la liste de courses. Appelle maintenant "
-                       "ajouter_a_la_liste avec les ingrédients de la recette (quantités recopiées, personnes_recette "
-                       "et personnes, sans ce que l'utilisateur a déjà). Ne réponds pas en texte."))
+                       "ajouter_recette (recette, personnes, sauf) ou, pour un produit isolé, ajouter_a_la_liste. "
+                       "Ne réponds pas en texte."))
     if ex.demande_liste and ex.liste_modifiee and _ENVOI.search(q) and not _PAS_ENVOI.search(q) and not ex.envoi_prepare:
         regles.append(("envoi", "L'utilisateur a demandé l'envoi : appelle maintenant envoyer_liste "
                        "(le système lui demandera de confirmer)."))
@@ -699,7 +799,9 @@ def answer(question: str, state: dict = None) -> dict:
             messages.append({"role": "tool", "tool_call_id": appel.get("id") or f"appel_{etape}_{i}",
                              "content": json.dumps(res, ensure_ascii=False)})
 
-    if arret == "reponse" and not texte:  # deux réponses vides : on répond à partir de l'état
+    if arret == "reponse" and ex.liste_modifiee and ABSTAIN.rstrip(".") in texte:
+        texte = ""  # « je ne trouve pas » alors que la liste a été remplie : la réponse contredit l'état
+    if arret == "reponse" and not texte:  # réponse vide : on répond à partir de l'état
         texte = ("Ta liste de courses : " + " ; ".join(st["shopping_list"])) if st["shopping_list"] else \
             "Je n'ai pas réussi à répondre, peux-tu reformuler ?"
     if arret == "max_steps":
