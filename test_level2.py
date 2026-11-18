@@ -79,8 +79,44 @@ class Recettes(unittest.TestCase):
         self.assertTrue(R.contient("pomme de terre « farineuses »", "pommes de terre"))
 
 
+class Routage(unittest.TestCase):
+    def test_questions_vers_le_rag_actions_vers_l_agent(self):
+        rag = ["Combien de temps faut-il blanchir les feuilles de vigne avant de les farcir ?",
+               "Pour combien de personnes est prévue la recette de bisque de homard ?",
+               "Qu'est-ce que je peux faire avec ça ?", "Quel est le cours du Bitcoin aujourd'hui ?",
+               "Quel légume de la famille des choux est ajouté dans le goulash ?",
+               "Combien de temps cuit la viande avant d'ajouter les carottes ?"]
+        rag += [c["question"] for c in protocole.load_tests() if c["type"] != "multi_step"]
+        agent = ["Convertis 20 cl en millilitres.", "250 grammes, ça fait combien en onces ?",
+                 "Quel est le Nutri-Score du yaourt nature ?", "Ajoute du pain.", "Envoie-la."]
+        agent += [c["question"] for c in protocole.load_tests() if c["type"] == "multi_step"]
+        for q in rag:
+            self.assertEqual(level2.route(q), "rag", q)
+        for q in agent:
+            self.assertEqual(level2.route(q), "agent", q)
+
+    def test_une_question_passe_par_le_rag_du_niveau_1(self):
+        reponse = {"answer": "Il faut les blanchir 35 secondes [1].", "sources": ["livre-de-cuisine-x"],
+                   "retrieved": ["livre-de-cuisine-x"], "state": {}, "steps": [{"mode": "bm25"}],
+                   "tokens_in": 300, "tokens_out": 20, "latency": 0.1}
+        modele = FauxModele()
+        with mock.patch.object(level2, "ROUTAGE", True), mock.patch.object(level2.level1, "answer", return_value=reponse), \
+                mock.patch.object(level2.llm, "chat", modele):
+            out = level2.answer("Combien de temps faut-il blanchir les feuilles de vigne ?")
+        self.assertEqual(out["route"], "rag")
+        self.assertEqual(out["answer"], reponse["answer"])
+        self.assertEqual(out["sources"], ["livre-de-cuisine-x"])
+        self.assertEqual(out["tokens_in"], 300)
+        self.assertEqual(modele.recus, [], "l'agent n'est pas appelé")
+
+
 class Agent(unittest.TestCase):
+    """La boucle de l'agent, routage coupé (les questions de test simples iraient sinon au RAG)."""
+
     def setUp(self):
+        patch_routage = mock.patch.object(level2, "ROUTAGE", False)
+        patch_routage.start()
+        self.addCleanup(patch_routage.stop)
         self.dossier = tempfile.TemporaryDirectory()
         self.envois = Path(self.dossier.name) / "envois.jsonl"
         patch = mock.patch.object(level2, "ENVOIS", self.envois)
@@ -366,8 +402,9 @@ class Agent(unittest.TestCase):
         self.assertEqual({c["id"] for c in cas}, set(bons_appels))
         reel = level2.executer_tool
         off = lambda nom, args: {"ok": True, "produits": []} if nom == "chercher_produit" else reel(nom, args)  # noqa: E731
-        for c in cas:
-            with self.subTest(cas=c["id"]), mock.patch.object(level2, "executer_tool", off):
+        for c in cas:  # routage activé : ces demandes doivent aller à l'agent
+            with self.subTest(cas=c["id"]), mock.patch.object(level2, "executer_tool", off), \
+                    mock.patch.object(level2, "ROUTAGE", True):
                 out = self.lancer(FauxModele(*bons_appels[c["id"]], "Fait."), c["question"])
                 self.assertTrue(protocole.check_state(c["final_state"], out["state"]), out["state"]["shopping_list"])
 

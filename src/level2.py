@@ -12,6 +12,11 @@ Outils, classés par effet (dictionnaire EFFETS) :
     ajouter_a_la_liste    écriture       articles isolés (ex. un produit trouvé dans Open Food Facts)
     envoyer_liste         irréversible   jamais exécuté par le modèle : met l'envoi en attente de confirmation
 
+Routage (LEVEL2_ROUTAGE, défaut 1) : le code envoie les simples QUESTIONS sur les recettes au RAG du niveau 1 et
+les ACTIONS (liste de courses, envoi, conversion, Open Food Facts) à l'agent. Mesure du 18/11 sur les 30 cas hors
+listes : l'agent seul répondait moins bien que le RAG (exactitude 0,05, puis 0,25 avec recherche initiale, contre
+0,80 au niveau 1) : avec six outils et un long prompt, qwen2.5:3b ne lisait plus les extraits.
+
 Contrat commun : answer(question) -> dict (voir src/level0.py). En plus, answer(question, state) reprend
 l'état renvoyé au tour précédent : c'est ce qui permet de répondre « oui » pour confirmer un envoi
 (interface Streamlit). Sans état, chaque appel repart de zéro, ce dont eval.py a besoin.
@@ -34,8 +39,9 @@ Règles métier tenues par le code (et non par le prompt), voir _ajouter :
     - allergies déclarées (« je suis allergique aux arachides ») : les articles concernés sont refusés ;
     - pas d'envoi d'une liste vide ; liste modifiée = confirmation annulée ; appel identique refusé.
     LEVEL2_TOP_K               extraits renvoyés par recherche (défaut 3 ; le contexte d'Ollama est limité)
-    LEVEL2_RECHERCHE_INITIALE  1 = le code lance la recherche sur la question avant le premier appel au modèle
-                               (variante à mesurer contre 0, le défaut, où le modèle décide seul)
+    LEVEL2_RECHERCHE_INITIALE  1 = sur le chemin de l'agent, le code lance la recherche avant le premier appel
+                               au modèle (variante mesurée le 18/11 : Recall 1,00 mais exactitude 0,25)
+    LEVEL2_ROUTAGE             1 (défaut) = questions -> RAG du niveau 1, actions -> agent ; 0 = tout à l'agent
 """
 import copy
 import json
@@ -63,6 +69,7 @@ TEMPERATURE = float(os.getenv("LEVEL2_TEMPERATURE", "0.3"))
 TOP_K = int(os.getenv("LEVEL2_TOP_K", "3"))
 RECHERCHE_INITIALE = os.getenv("LEVEL2_RECHERCHE_INITIALE", "0") == "1"
 RELANCE = os.getenv("LEVEL2_RELANCE", "1") == "1"
+ROUTAGE = os.getenv("LEVEL2_ROUTAGE", "1") == "1"
 MAX_RELANCES = 3       # en tout par question
 MAX_PAR_MOTIF = 2      # par motif de relance
 MAX_EXTRAITS_RECETTE = 4
@@ -341,6 +348,7 @@ class _Execution:
         self.liste_modifiee = False
         self.envoi_prepare = False
         self.demande_liste = False
+        self.route = "agent"
         self.question = ""
         self.produits_cherches = []   # noms passés à chercher_produit (exception à la redirection vers la recette)
         self.apports = {}             # doc_id -> articles ajoutés par ajouter_recette pendant cette question
@@ -757,6 +765,21 @@ def consigne_de_relance(question, texte, ex):
     return None
 
 
+# ---------------------------------------------------------------------------------------------- routage
+
+_DEMANDE_ACTION = re.compile(
+    r"\bconverti|\ben (ml|millilitres?|cl|centilitres?|dl|l|litres?|g|grammes?|kg|kilos?|oz|onces?|tasses?|cuilleres?)\b"
+    r"|\bthermostat\b|open ?food ?facts|nutri-?score|\bmarques?\b|\bproduits?\b")
+# Impératifs, cherchés AVEC les accents : « ajoute du pain » est une action, « le chou est ajouté » une question.
+_IMPERATIF = re.compile(r"\b(ajoute|ajoutez|envoie|envoyez|envoyer)\b")
+
+
+def route(question):
+    """« agent » pour une action (liste, envoi, conversion, produit), « rag » pour une question sur les recettes."""
+    action = demande_liste(question) or _DEMANDE_ACTION.search(norm(question)) or _IMPERATIF.search(question.lower())
+    return "agent" if action else "rag"
+
+
 # ---------------------------------------------------------------------------------------------- boucle
 
 def _system(st):
@@ -800,7 +823,8 @@ def _sortie(ex, question, texte, t0, seed, arret):
         "tokens_in": ex.tokens_in,
         "tokens_out": ex.tokens_out,
         "latency": time.time() - t0,
-        "arret": arret,                    # reponse | max_steps | max_tokens | confirmation
+        "route": ex.route,                 # agent | rag
+        "arret": arret,                    # reponse | max_steps | max_tokens | confirmation | rag
         "seed": seed,
         "relances": ex.relances,
         "relances_par_motif": ex.relances_par_motif,
@@ -844,6 +868,17 @@ def answer(question: str, state: dict = None) -> dict:
             st["allergies"].append(a)
     ex.demande_liste = demande_liste(question)
     ex.question = question
+
+    # Routage : une simple question sur les recettes va au RAG du niveau 1 (mesuré meilleur sur ce modèle).
+    if ROUTAGE and route(question) == "rag":
+        ex.route = "rag"
+        rag = level1.answer(question)
+        ex.tokens_in, ex.tokens_out = rag["tokens_in"], rag["tokens_out"]
+        ex.retrieved = rag["retrieved"]
+        ex.steps.append({"etape": 0, "type": "routage", "route": "rag (niveau 1)", "trace_rag": rag.get("steps")})
+        out = _sortie(ex, question, rag["answer"] or "", t0, seed, "rag")
+        out["sources"] = rag["sources"]  # sources citées par le RAG (numéros de ses propres extraits)
+        return out
 
     messages = [{"role": "system", "content": _system(st)}, *st["historique"], {"role": "user", "content": question}]
 
