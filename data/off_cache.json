@@ -35,5 +35,133 @@
     "url": "https://fr.openfoodfacts.org/produit/3560071006846"
    }
   ]
+ },
+ "oignons": {
+  "ok": true,
+  "recherche": "oignons",
+  "nombre": 5,
+  "resultats": [
+   {
+    "nom": "Oignon",
+    "marque": "Tip Top",
+    "quantite": "500 g",
+    "nutriscore": "A",
+    "nova": 1,
+    "kcal_100g": null,
+    "code": "3236021134340",
+    "url": "https://fr.openfoodfacts.org/produit/3236021134340"
+   },
+   {
+    "nom": "Oignons jaunes",
+    "marque": "Nature D’origine, Sans Marque",
+    "quantite": "350 g",
+    "nutriscore": "A",
+    "nova": 1,
+    "kcal_100g": null,
+    "code": "3521230003809",
+    "url": "https://fr.openfoodfacts.org/produit/3521230003809"
+   },
+   {
+    "nom": "Oignon Jaune",
+    "marque": "Top Budget",
+    "quantite": "1 kg",
+    "nutriscore": "A",
+    "nova": 1,
+    "kcal_100g": null,
+    "code": "3410280052789",
+    "url": "https://fr.openfoodfacts.org/produit/3410280052789"
+   },
+   {
+    "nom": "Oignons  jaunes",
+    "marque": "Bio Village, Marque Repère",
+    "quantite": "1 kg",
+    "nutriscore": "UNKNOWN",
+    "nova": 1,
+    "kcal_100g": null,
+    "code": "3564707090971",
+    "url": "https://fr.openfoodfacts.org/produit/3564707090971"
+   },
+   {
+    "nom": "Oignon jaune",
+    "marque": "Notre Jardin, Marque Repère",
+    "quantite": "1 kg",
+    "nutriscore": "A",
+    "nova": 1,
+    "kcal_100g": null,
+    "code": "3564700584996",
+    "url": "https://fr.openfoodfacts.org/produit/3564700584996"
+   }
+  ]
+ },
+ "lait de coco en boite": {
+  "ok": true,
+  "recherche": "laït de coco en boîte",
+  "nombre": 1,
+  "resultats": [
+   {
+    "nom": "حلويات الشريف",
+    "marque": "Boîte",
+    "quantite": "غ250",
+    "nutriscore": "UNKNOWN",
+    "nova": null,
+    "kcal_100g": null,
+    "code": "61309876365412",
+    "url": "https://fr.openfoodfacts.org/produit/61309876365412"
+   }
+  ]
+ },
+ "laits de coco en boite": {
+  "ok": true,
+  "recherche": "laits de coco en boîte",
+  "nombre": 1,
+  "resultats": [
+   {
+    "nom": "Lait de coco - boîte de",
+    "marque": "Guayapi",
+    "quantite": "400 ml",
+    "nutriscore": "D",
+    "nova": null,
+    "kcal_100g": 172,
+    "code": "3471125148385",
+    "url": "https://fr.openfoodfacts.org/produit/3471125148385"
+   }
+  ]
+ },
+ "vin blanc": {
+  "ok": true,
+  "recherche": "vin blanc",
+  "nombre": 3,
+  "resultats": [
+   {
+    "nom": "Vin blanc sec",
+    "marque": "La Villageoise",
+    "quantite": "25 cl",
+    "nutriscore": "NOT-APPLICABLE",
+    "nova": 3,
+    "kcal_100g": 73,
+    "code": "3175520036338",
+    "url": "https://fr.openfoodfacts.org/produit/3175520036338"
+   },
+   {
+    "nom": "Vin Blanc Sec",
+    "marque": "Valrian",
+    "quantite": "25 cL e",
+    "nutriscore": "NOT-APPLICABLE",
+    "nova": 3,
+    "kcal_100g": null,
+    "code": "3250390488842",
+    "url": "https://fr.openfoodfacts.org/produit/3250390488842"
+   },
+   {
+    "nom": "Vin blanc sec",
+    "marque": "Ribaudour",
+    "quantite": "25 cl",
+    "nutriscore": "NOT-APPLICABLE",
+    "nova": null,
+    "kcal_100g": null,
+    "code": "3021891008897",
+    "url": "https://fr.openfoodfacts.org/produit/3021891008897"
+   }
+  ]
  }
 }
